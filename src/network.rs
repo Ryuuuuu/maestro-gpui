@@ -18,6 +18,9 @@ pub enum Update {
     Targets(bool, Result<Vec<Value>, String>),
     Switched(Result<Value, String>),
     Output(String),
+    Traffic(Value),
+    TrafficReply(Result<String, String>),
+    TrafficDetail(String, String),
     Flows(Vec<Value>),
     Library(Vec<String>),
     Document(String, bool, Result<String, String>),
@@ -28,6 +31,7 @@ pub struct Connection {
     pub updates: Receiver<Update>,
     pub input: Sender<String>,
     url: String,
+    pub traffic_selection: Arc<Mutex<(String, usize)>>,
     sender: Sender<Update>,
     generation: Arc<AtomicUsize>,
     frame: Arc<Mutex<Option<(usize, image::RgbaImage)>>>,
@@ -60,6 +64,27 @@ fn subscribe(url: String, update: fn(Value) -> Update, tx: Sender<Update>) {
 impl Connection {
     pub fn new(url: String) -> Self {
         let (sender, updates) = mpsc::channel();
+        let traffic_selection = Arc::new(Mutex::new((String::new(), 0)));
+        let selection = Arc::clone(&traffic_selection);
+        let traffic_url = url.clone();
+        let tx = sender.clone();
+        thread::spawn(move || {
+            let mut previous = Value::Null;
+            loop {
+                let (id, page) = selection.lock().unwrap().clone();
+                let snapshot = ureq::get(format!("{traffic_url}/api/proxy?run={id}&page={page}"))
+                    .call()
+                    .and_then(|mut r| r.body_mut().read_json::<Value>())
+                    .unwrap_or(Value::Null);
+                if previous != snapshot {
+                    previous = snapshot.clone();
+                    if tx.send(Update::Traffic(snapshot)).is_err() {
+                        break;
+                    }
+                }
+                thread::sleep(Duration::from_secs(1));
+            }
+        });
         subscribe(
             format!("{url}/api/events/stream"),
             Update::Event,
@@ -99,6 +124,7 @@ impl Connection {
             }
         });
         Self {
+            traffic_selection,
             updates,
             input,
             url,
@@ -177,6 +203,53 @@ impl Connection {
         });
     }
 
+    pub fn traffic_action(&self, path: String) {
+        let url = format!("{}/api/proxy/{path}", self.url);
+        let tx = self.sender.clone();
+        thread::spawn(move || {
+            let result = (|| {
+                let mut response = ureq::post(url)
+                    .config()
+                    .http_status_as_error(false)
+                    .build()
+                    .send_empty()
+                    .map_err(|e| e.to_string())?;
+                let ok = response.status().is_success();
+                let body: Value = response.body_mut().read_json().map_err(|e| e.to_string())?;
+                if !ok {
+                    return Err(body["error"]
+                        .as_str()
+                        .unwrap_or("프록시 요청 실패")
+                        .to_owned());
+                }
+                Ok(body["path"]
+                    .as_str()
+                    .map(|s| format!("{s} 저장"))
+                    .unwrap_or_default())
+            })();
+            let _ = tx.send(Update::TrafficReply(result));
+        });
+    }
+
+    pub fn traffic_detail(&self, key: String) {
+        let url = format!("{}/api/proxy/detail/{key}", self.url);
+        let tx = self.sender.clone();
+        thread::spawn(move || {
+            let text = ureq::get(url)
+                .call()
+                .and_then(|mut r| r.body_mut().read_json::<Value>())
+                .map(|body| {
+                    format!(
+                        "요청\n{}\n\n응답\n{}",
+                        body["request"].as_str().unwrap_or(""),
+                        body["response"].as_str().unwrap_or("")
+                    )
+                })
+                .unwrap_or_else(|e| e.to_string());
+            let _ = tx.send(Update::TrafficDetail(key, text));
+        });
+    }
+
     pub fn list_library(&self) {
         let url = format!("{}/api/library", self.url);
         let tx = self.sender.clone();
@@ -247,8 +320,8 @@ impl Connection {
 
     pub fn replay(&self, path: std::path::PathBuf, device: Value) {
         self.execute("/api/flows/run", move || {
-            let yaml = std::fs::read_to_string(path).map_err(|e| e.to_string())?;
-            Ok(json!({"yaml":yaml,"device":device}))
+            let yaml = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
+            Ok(json!({"yaml":yaml,"name":path.file_name().and_then(|s|s.to_str()),"device":device}))
         });
     }
 

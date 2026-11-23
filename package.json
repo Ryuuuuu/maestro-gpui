@@ -7,6 +7,7 @@
     "node": ">=22.12.0"
   },
   "scripts": {
+    "setup:proxy": "node server/setup-proxy.js",
     "web": "node server/main.js",
     "desktop": "cargo run --locked",
     "test": "node --test",

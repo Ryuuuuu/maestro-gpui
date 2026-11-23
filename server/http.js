@@ -1,6 +1,7 @@
 import { inspectionService } from "./inspection.js";
 import { importFlow } from "./flows.js";
 import { androidKeyboard } from "./android-keyboard.js";
+import { trafficRecorder } from "./proxy.js";
 import http from "node:http";
 import { readFile } from "node:fs/promises";
 
@@ -12,9 +13,10 @@ const routes = new Map([
   ["/api/device/input", "POST"],
 ]);
 
-export function createViewerServer(session) {
+export function createViewerServer(session, traffic = trafficRecorder()) {
   let busy = false;
   let saving = false;
+  let changingProxy = false;
   const keyboard = androidKeyboard();
   const inspection = inspectionService();
   const server = http.createServer(async (req, res) => {
@@ -35,6 +37,35 @@ export function createViewerServer(session) {
     )
       return reply(403, { error: "Local access only" });
     try {
+      if (req.url === "/api/proxy" || req.url.startsWith("/api/proxy?")) {
+        if (req.method !== "GET") return reply(405, { error: "GET required" });
+        const params = new URL(req.url, "http://" + host).searchParams;
+        return reply(200, traffic.snapshot(params.get("run"), params.get("page")));
+      }
+      if (req.url.startsWith("/api/proxy/")) {
+        const detail = /^\/api\/proxy\/detail\/([0-9a-f-]{36})\/(\d+)$/.exec(req.url);
+        if (detail && req.method === "GET") return reply(200, await traffic.detail(detail[1], Number(detail[2])));
+        if (req.method !== "POST") return reply(405, { error: "POST required" });
+        if (req.url.startsWith("/api/proxy/save/")) {
+          if (saving) return reply(409, { error: "저장 창이 열려 있습니다." });
+          saving = true;
+          try { return reply(200, { path: await traffic.save(req.url.slice("/api/proxy/save/".length)) }); }
+          finally { saving = false; }
+        }
+        if (busy || changingProxy) return reply(409, { error: "진행 중인 작업이 끝난 후 전환하세요." });
+        changingProxy = true;
+        try {
+          if (req.url === "/api/proxy/off") await traffic.stop();
+          else if (req.url.startsWith("/api/proxy/on/")) {
+            const id = decodeURIComponent(req.url.slice("/api/proxy/on/".length));
+            const response = await fetch(session.viewer + "/api/device/targets");
+            const target = (await response.json()).devices?.find(d => d.deviceId === id);
+            if (!target) return reply(400, { error: "연결할 기기를 먼저 선택하세요." });
+            await traffic.start(target, [req.socket.localPort, new URL(session.viewer).port]);
+          } else return reply(404, { error: "Route not found" });
+          return reply(200, traffic.snapshot());
+        } finally { changingProxy = false; }
+      }
       if (req.url.startsWith("/api/inspection/")) return await inspection.handle(req,res,reply);
       if (req.url === "/" && req.method === "GET") {
         const html = await readFile(
@@ -122,11 +153,12 @@ export function createViewerServer(session) {
           if (data.length > (replay ? 8 * 1024 * 1024 : 65536))
             return reply(413, { error: "Prompt too long" });
         }
-        let prompt, steps, device;
+        let prompt, steps, device, label;
         try {
           const body = JSON.parse(data);
           if (replay) {
             steps = importFlow(body.yaml);
+            label = typeof body.name === "string" && body.name.trim() ? body.name : "동선 파일 실행";
             device = body.device;
             if (!device) {
               const response = await fetch(
@@ -148,7 +180,7 @@ export function createViewerServer(session) {
         }
         if (!replay && (typeof prompt !== "string" || !prompt.trim()))
           return reply(400, { error: "Enter a prompt" });
-        if (busy) return reply(409, { error: "Another prompt is running" });
+        if (busy || changingProxy) return reply(409, { error: "다른 작업이 진행 중입니다." });
         const streaming = req.headers.accept === "application/x-ndjson";
         let atLineStart = true,
           tail = "";
@@ -175,7 +207,9 @@ export function createViewerServer(session) {
           res.flushHeaders();
         }
         busy = true;
+        let capture, success = false;
         try {
+          capture = await traffic.begin(label || prompt, device);
           const text = replay
             ? await session.replay(steps, device, streaming ? emit : undefined)
             : await session.prompt(
@@ -183,11 +217,14 @@ export function createViewerServer(session) {
                 streaming ? emit : undefined,
                 device,
               );
+          success = true;
+          await traffic.finish(capture, true);
           if (streaming) {
             emit("done", text);
             res.end();
           } else reply(200, { text });
         } catch (error) {
+          if (!success) await traffic.finish(capture, false);
           if (!streaming) throw error;
           emit("error", error.message);
           res.end();
@@ -224,5 +261,7 @@ export function createViewerServer(session) {
   });
   server.on("close", keyboard.close);
   server.on("close", inspection.close);
+  server.closeProxy = () => traffic.close();
+  server.on("close", () => void traffic.close().catch(error => console.error(error.message)));
   return server;
 }

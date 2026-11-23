@@ -27,6 +27,16 @@ npm ci --prefix web
 4. `.env.example`을 `.env`로 복사하고 모델을 설정합니다. macOS·Linux에서는 `cp .env.example .env`, PowerShell에서는 `Copy-Item .env.example .env`를 사용할 수 있습니다.
 5. Android 기기 또는 에뮬레이터, macOS의 iOS 시뮬레이터를 준비하고 실행 모드를 선택합니다. 연결 가능한 기기가 하나면 Viewer가 자동으로 스트리밍을 시작합니다. 기기가 여러 대이면 상단 오른쪽 **기기** 목록에서 대상을 선택하세요. 새로 연결한 기기는 목록 옆 새로고침 버튼으로 불러옵니다. 실제 기기 제어 범위는 해당 호스트의 Maestro 드라이버를 따릅니다.
 
+## 동선 통신 기록
+
+Python 3.12와 Android Platform Tools(`adb`)를 준비하고 프로젝트 루트에서 `npm run setup:proxy`를 한 번 실행하세요. 웹과 GPUI 모두 같은 로컬 엔진을 사용합니다. 엔진은 공식 mitmproxy 패키지의 `DumpMaster`와 `FlowWriter`를 사용합니다. [mitmproxy 소스](https://github.com/mitmproxy/mitmproxy)
+
+1. 상단에서 기기를 선택하고 **프록시 OFF**를 눌러 켭니다. Android는 ADB를 통해 선택한 기기의 시스템 HTTP 프록시를 연결하며, 프록시를 끄거나 Viewer를 정상 종료하면 해제합니다. iOS 시뮬레이터에서는 **통신 기록**에 표시되는 루프백 주소를 테스트 클라이언트의 HTTP 프록시로 지정하세요.
+2. **동선 생성**에서 프롬프트, `/run` 또는 **동선 파일 실행**으로 실행합니다. **통신 기록**에는 해당 실행 구간에 프록시를 경유해 시작된 요청과 HTTPS 터널 연결이 표시됩니다. 기기의 다른 앱이 같은 구간에 만든 요청도 포함됩니다.
+3. 기록에서 요청을 누르면 요청·응답 헤더와 텍스트 본문 미리보기가 펼쳐집니다. 실행이 끝나면 원하는 실행을 고른 뒤 **파일 저장**을 누르세요. 저장 창은 `captures/`에서 열립니다. 저장한 파일은 `mitmweb -r 파일명.mitm`으로 다시 열 수 있습니다. 저장 전 기록은 현재 Viewer 세션 동안 유지됩니다.
+
+HTTPS 연결은 기본적으로 원래의 TLS 연결을 유지하며 새 CONNECT 요청을 기록합니다. 테스트 앱에서 HTTPS 요청·응답까지 확인할 때는 `.env`의 `MAESTRO_PROXY_HTTPS_HOSTS`에 정확한 테스트 호스트 이름을 쉼표로 구분해 넣고 프록시를 다시 켜세요. 테스트 클라이언트가 이 프로젝트에서 생성한 공개 인증서 `.tools/proxy-config/mitmproxy-ca-cert.pem`을 신뢰해야 합니다. 시스템 프록시를 사용하지 않는 앱의 직접 연결이나 UDP 트래픽은 수집 대상에서 제외됩니다.
+
 ## 모델 설정
 
 | 모델 서비스 | MODEL_PROVIDER | 자격 증명 또는 주소 |

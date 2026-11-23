@@ -11,7 +11,7 @@ async function close(code = 0) {
   server.closeAllConnections();
   server.close();
   try {
-    await session.close();
+    await Promise.all([session.close(), server.closeProxy()]);
   } finally {
     process.exit(code);
   }

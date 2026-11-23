@@ -21,6 +21,10 @@ jobs:
         run: xcodebuild -downloadComponent MetalToolchain
       - run: npm ci
       - run: npm ci --prefix web
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: npm run setup:proxy
       - run: npm test
       - run: npm --prefix web run build
       - run: cargo test --locked

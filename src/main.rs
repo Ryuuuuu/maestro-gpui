@@ -3,6 +3,7 @@ mod launcher;
 mod network;
 mod overlay;
 mod style;
+mod traffic;
 
 use gpui::{prelude::*, *};
 use gpui_component::{
@@ -33,6 +34,10 @@ struct Viewer {
     targets: Vec<Value>,
     picker_pending: bool,
     picker_error: String,
+    traffic: Value,
+    traffic_pending: bool,
+    traffic_message: String,
+    traffic_detail: Option<(String, String)>,
     checklist: inspection::Checklist,
     conn: Connection,
     rows: BTreeMap<u64, Value>,
@@ -137,6 +142,10 @@ impl Viewer {
             targets: Vec::new(),
             picker_pending: true,
             picker_error: String::new(),
+            traffic: Value::Null,
+            traffic_pending: false,
+            traffic_message: String::new(),
+            traffic_detail: None,
             rows: BTreeMap::new(),
             device: Value::Null,
             stream: None,
@@ -180,6 +189,18 @@ impl Viewer {
                 self.picker_pending = false;
             }
             match update {
+                Update::Traffic(state) => self.traffic = state,
+                Update::TrafficDetail(key, value) => {
+                    if let Some((open, text)) = &mut self.traffic_detail
+                        && *open == key
+                    {
+                        *text = value;
+                    }
+                }
+                Update::TrafficReply(result) => {
+                    self.traffic_pending = false;
+                    self.traffic_message = result.unwrap_or_else(|e| e);
+                }
                 Update::Targets(initial, result) => {
                     self.picker_pending = false;
                     match result {
@@ -956,12 +977,13 @@ impl Render for Viewer {
             .gap_2()
             .text_xs()
             .child(self.picker_error.clone())
+            .child(self.proxy_toggle(cx))
             .child("기기")
             .child(
                 Button::new("device-picker")
                     .small()
                     .label(format!("{label} ▾"))
-                    .disabled(self.picker_pending || targets.is_empty())
+                    .disabled(self.picker_pending || targets.is_empty() || self.traffic["state"] == "on")
                     .dropdown_menu_with_anchor(Corner::TopRight, move |mut menu, _, _| {
                         for t in &targets {
                             let target = t.clone();
@@ -1226,7 +1248,8 @@ impl Render for Viewer {
                     .line_height(px(20.))
                     .text_color(rgb(0x262626))
                     .child(self.terminal.clone()),
-            );
+            )
+            .child(self.traffic_panel(p, cx));
         let input_focus = self.input.focus_handle(cx);
         let editor_focus = self.editor.focus_handle(cx);
         let inspection_search_focus = self.inspection_search.focus_handle(cx);

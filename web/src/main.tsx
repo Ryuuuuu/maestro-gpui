@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import "./styles.css";
 import { Inspection } from "./Inspection";
 import { Prompt } from "./Prompt";
+import { TrafficProvider, ProxyToggle, useProxyEnabled } from "./Traffic";
 
 type CommandStatus = "pending" | "started" | "completed" | "failed" | "warned" | "skipped";
 type DriverStatus = "started" | "completed" | "failed";
@@ -910,6 +911,7 @@ function subscribePage(notify: () => void) {
 }
 
 function App() {
+  const proxyEnabled = useProxyEnabled();
   const hash = React.useSyncExternalStore(subscribePage, () => location.hash);
   const page = hash === "#/history" ? "history" : hash === "#/inspection" ? "inspection" : "flows";
   const [overlays, setOverlays] = React.useState<DeviceOverlay[]>([]);
@@ -1054,8 +1056,9 @@ function App() {
           )}
           <div className="ml-auto flex min-w-0 items-center gap-2 text-xs">
             {pickerError && <span role="alert">{pickerError}</span>}
+            <ProxyToggle device={deviceState.deviceId} />
             <label htmlFor="device-picker">기기</label>
-            <select id="device-picker" disabled={loadingTargets || switching || !targets.length}
+            <select id="device-picker" disabled={proxyEnabled || loadingTargets || switching || !targets.length}
               value={deviceState.status === "error" ? "" : deviceState.deviceId ?? ""}
               className="max-w-[36vw] rounded-md border border-neutral-300 bg-white px-2 py-1.5 dark:border-neutral-700 dark:bg-neutral-900"
               onChange={e=>{const target=targets.find(t=>t.deviceId===e.target.value); if(target) void startDeviceStream(target);}}>
@@ -1089,7 +1092,7 @@ const root = createRoot(document.getElementById("root")!);
 if (isDemo) {
   import("./demo").then(({ DemoApp }) => root.render(<DemoApp />));
 } else {
-  root.render(<App />);
+  root.render(<TrafficProvider><App /></TrafficProvider>);
 }
 
 

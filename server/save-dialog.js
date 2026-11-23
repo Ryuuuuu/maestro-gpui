@@ -10,8 +10,8 @@ const windowsDialog = `
   $dialog = New-Object System.Windows.Forms.SaveFileDialog
   $dialog.InitialDirectory = $env:MAESTRO_DIALOG_DIRECTORY
   $dialog.FileName = $env:MAESTRO_DIALOG_NAME
-  $dialog.Filter = 'Maestro YAML (*.yaml;*.yml)|*.yaml;*.yml'
-  $dialog.DefaultExt = 'yaml'
+  $dialog.Filter = $env:MAESTRO_DIALOG_FILTER
+  $dialog.DefaultExt = $env:MAESTRO_DIALOG_EXT
   $dialog.RestoreDirectory = $true
   $owner = New-Object System.Windows.Forms.Form
   $owner.TopMost = $true
@@ -21,14 +21,14 @@ const windowsDialog = `
 `;
 const macDialog = `on run argv
   try
-    set destination to choose file name with prompt "Save Maestro flow" default location (POSIX file (item 1 of argv) as alias) default name (item 2 of argv)
+    set destination to choose file name with prompt (item 3 of argv) default location (POSIX file (item 1 of argv) as alias) default name (item 2 of argv)
     return POSIX path of destination
   on error number -128
     return ""
   end try
 end run`;
 
-export async function chooseFlowPath(directory, name) {
+export async function chooseFlowPath(directory, name, ext = "yaml") {
   let result;
   if (process.platform === "win32") {
     result = await run(
@@ -45,11 +45,13 @@ export async function chooseFlowPath(directory, name) {
           ...process.env,
           MAESTRO_DIALOG_DIRECTORY: directory,
           MAESTRO_DIALOG_NAME: name,
+          MAESTRO_DIALOG_EXT: ext,
+          MAESTRO_DIALOG_FILTER: ext === "mitm" ? "mitmproxy (*.mitm)|*.mitm" : "Maestro YAML (*.yaml;*.yml)|*.yaml;*.yml",
         },
       },
     );
   } else if (process.platform === "darwin") {
-    result = await run("osascript", ["-e", macDialog, directory, name]);
+    result = await run("osascript", ["-e", macDialog, directory, name, ext === "mitm" ? "통신 기록 저장" : "Save Maestro flow"]);
   } else {
     const path = join(directory, name);
     try {
@@ -66,7 +68,7 @@ export async function chooseFlowPath(directory, name) {
         result = await run("kdialog", [
           "--getsavefilename",
           path,
-          "*.yaml *.yml",
+          ext === "mitm" ? "*.mitm" : "*.yaml *.yml",
         ]);
       } catch (fallback) {
         if (fallback.code === 1 && !fallback.stderr) return null;

@@ -1,6 +1,7 @@
 import React from "react";
 import { StatusChip } from "./StatusChip";
 import { FlowEditor } from "./FlowEditor";
+import { TrafficPanel } from "./Traffic";
 
 type SavedRun = { id: string; label: string; device: string; count: number };
 export function Prompt({ device }: { device?: string }) {
@@ -77,7 +78,7 @@ export function Prompt({ device }: { device?: string }) {
         },
         body: JSON.stringify(
           file
-            ? { yaml: await file.text(), device }
+            ? { yaml: await file.text(), name: file.name, device }
             : { prompt: value, device },
         ),
       });
@@ -265,6 +266,7 @@ export function Prompt({ device }: { device?: string }) {
         >
           {log}
         </pre>
+        <TrafficPanel />
       </aside>
       <FlowEditor
         open={editorOpen}
