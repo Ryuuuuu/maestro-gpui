@@ -26,7 +26,7 @@ if (native) {
   process.stdin.resume();
   process.stdin.once("end", () => void close());
 }
-server.listen(Number(process.env.PORT || 0), "127.0.0.1", () => {
+server.listen(Number(process.env.PORT || (native ? 0 : 18379)), "127.0.0.1", () => {
   const url = "http://127.0.0.1:" + server.address().port;
   if (native) {
     console.log(url);

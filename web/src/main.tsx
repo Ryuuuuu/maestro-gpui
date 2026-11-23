@@ -749,12 +749,14 @@ function DevicePanel({
   rows,
   device,
   platform,
+  placeholderTitle = "연결된 기기 없음",
   placeholderMessage,
   toggleLanguage,
 }: {
   rows: CommandEntry[];
   device?: React.ReactNode;
   platform?: string;
+  placeholderTitle?: string;
   placeholderMessage?: string;
   toggleLanguage?: () => void;
 }) {
@@ -792,13 +794,65 @@ function DevicePanel({
             <rect x="6" y="2.5" width="12" height="19" rx="2.5" />
             <path d="M10.5 18.5h3" />
           </svg>
-          <div className="text-sm font-medium text-neutral-700 dark:text-neutral-200">No device connected</div>
+          <div role="status" className="text-sm font-medium text-neutral-700 dark:text-neutral-200">{placeholderTitle}</div>
           {placeholderMessage && (
             <div className="max-w-[15rem] text-xs leading-relaxed whitespace-pre-wrap text-neutral-500 dark:text-neutral-400">{placeholderMessage}</div>
           )}
         </div>
       )}
     </div>
+  );
+}
+
+function LiveDevicePanel({ rows, url, overlays, platform, toggleLanguage }: {
+  rows: CommandEntry[];
+  url: string;
+  overlays: DeviceOverlay[];
+  platform?: string;
+  toggleLanguage?: () => void;
+}) {
+  const image = React.useRef<HTMLImageElement>(null);
+  const [attempt, setAttempt] = React.useState(0);
+  const [phase, setPhase] = React.useState<"loading" | "playing" | "retrying">("loading");
+
+  React.useEffect(() => {
+    if (phase === "playing") return;
+    if (phase === "retrying") {
+      const timer = window.setTimeout(() => {
+        setAttempt(n => n + 1);
+        setPhase("loading");
+      }, Math.min(8000, 1000 * 2 ** Math.min(attempt, 3)));
+      return () => window.clearTimeout(timer);
+    }
+    // A multipart response can stay open without ever delivering a decodable frame.
+    const timer = window.setTimeout(() => {
+      setPhase(image.current?.naturalWidth ? "playing" : "retrying");
+    }, 8000);
+    return () => window.clearTimeout(timer);
+  }, [attempt, phase]);
+
+  const playing = phase === "playing";
+  return (
+    <DevicePanel rows={rows} platform={playing ? platform : undefined} toggleLanguage={toggleLanguage} device={
+      <>
+        {phase !== "retrying" && <img key={attempt} ref={image} className={playing ? "viewer-stream block" : "absolute size-px opacity-0"}
+          src={url} alt="휴대폰 화면" draggable={false}
+          onLoad={e => { if (e.currentTarget.naturalWidth) setPhase("playing"); }}
+          onError={() => setPhase("retrying")} />}
+        {playing ? <>
+          <div className="pointer-events-none absolute inset-0">
+            <DeviceOverlayCanvas overlays={overlays} />
+            {overlays
+              .filter((overlay): overlay is Extract<DeviceOverlay, { kind: "input_text" }> => overlay.kind === "input_text")
+              .map((overlay) => <InputTextOverlay key={overlay.id} overlay={overlay} />)}
+          </div>
+          <GestureLayer />
+        </> : <div role="status" className="viewer-placeholder flex aspect-[9/19] h-[calc(var(--viewer-height)-4rem)] flex-col items-center justify-center gap-3 px-5 text-center text-sm text-neutral-200">
+          <span aria-hidden="true" className="size-5 rounded-full border-2 border-neutral-600 border-t-indigo-300 motion-safe:animate-spin" />
+          {phase === "retrying" || attempt > 0 ? "휴대폰 영상 다시 연결 중…" : "휴대폰 화면 연결 중…"}
+        </div>}
+      </>
+    } />
   );
 }
 
@@ -828,19 +882,6 @@ export function ViewerLayout({
   page?: "flows" | "inspection" | "history";
   keyboard?: {toggleLanguage:()=>void; error:string};
 }) {
-  const device: React.ReactNode = deviceState.status === "streaming" && deviceState.streamUrl ? (
-    <>
-      <img className="viewer-stream block" src={deviceState.streamUrl} draggable={false} />
-      <div className="pointer-events-none absolute inset-0">
-        <DeviceOverlayCanvas overlays={overlays} />
-        {overlays
-          .filter((overlay): overlay is Extract<DeviceOverlay, { kind: "input_text" }> => overlay.kind === "input_text")
-          .map((overlay) => <InputTextOverlay key={overlay.id} overlay={overlay} />)}
-      </div>
-      <GestureLayer />
-    </>
-  ) : undefined;
-
   return (
     <main data-collapsed={collapsed} className="flex h-screen overflow-x-auto overflow-y-hidden bg-neutral-100 text-neutral-700 dark:bg-neutral-950 dark:text-neutral-200">
       <section className="flex min-h-0 min-w-fit flex-1 items-center justify-center">
@@ -851,13 +892,12 @@ export function ViewerLayout({
           </div>
           <Inspection device={deviceState.deviceId} visible={page === "inspection"} historyVisible={page === "history"} />
           {keyboard?.error && <span role="alert">{keyboard.error}</span>}
-          <DevicePanel
-            toggleLanguage={keyboard?.toggleLanguage}
-            rows={rows}
-            device={device}
-            platform={deviceState.platform}
-            placeholderMessage={deviceState.message}
-          />
+          {deviceState.status === "streaming" && deviceState.streamUrl
+            ? <LiveDevicePanel key={deviceState.deviceId + ":" + deviceState.streamUrl} url={deviceState.streamUrl}
+                rows={rows} overlays={overlays} platform={deviceState.platform} toggleLanguage={keyboard?.toggleLanguage} />
+            : <DevicePanel rows={rows}
+                placeholderTitle={deviceState.status === "starting" ? "휴대폰 화면 연결 중…" : deviceState.status === "error" ? "기기 연결을 확인하세요" : undefined}
+                placeholderMessage={deviceState.message} />}
         </div>
       </section>
     </main>
@@ -880,6 +920,10 @@ function App() {
   const [loadingTargets, setLoadingTargets] = React.useState(true);
   const [switching, setSwitching] = React.useState(false);
   const [pickerError, setPickerError] = React.useState("");
+  const previousDevice = React.useRef<string | undefined>(undefined);
+  const latestState = React.useRef(deviceState);
+  const listing = React.useRef<AbortController | null>(null);
+  const starting = React.useRef<AbortController | null>(null);
 
   useInputFlushLoop();
   const keyboard = useKeyboardInput(deviceState);
@@ -915,47 +959,88 @@ function App() {
   }, [overlays]);
 
   React.useEffect(() => {
-    const stream = new EventSource("/api/device/state");
-
-    stream.onmessage = (message) => {
-      setDeviceState(JSON.parse(message.data));
+    let timer: number;
+    let stream: EventSource;
+    function connect() {
+      let first = true;
+      stream = new EventSource("/api/device/state");
+      stream.onmessage = (message) => {
+        const state: DeviceState = JSON.parse(message.data);
+        latestState.current = state;
+        if (state.deviceId) previousDevice.current = state.deviceId;
+        setDeviceState(state);
+        if (first) {
+          first = false;
+          void refreshTargets();
+        }
+      };
+      stream.onerror = () => {
+        stream.close();
+        listing.current?.abort();
+        starting.current?.abort();
+        const state: DeviceState = { status: "starting", message: "로컬 서버에 다시 연결하는 중입니다." };
+        latestState.current = state;
+        setDeviceState(state);
+        setTargets([]);
+        setPickerError("");
+        setLoadingTargets(true);
+        setSwitching(false);
+        timer = window.setTimeout(connect, 2000);
+      };
+    }
+    connect();
+    return () => {
+      window.clearTimeout(timer);
+      stream.close();
+      listing.current?.abort();
+      starting.current?.abort();
     };
-
-    return () => stream.close();
   }, []);
 
-  async function refreshTargets(autoStart = false) {
+  async function refreshTargets() {
+    listing.current?.abort();
+    const request = new AbortController();
+    listing.current = request;
     setLoadingTargets(true);
     setPickerError("");
     try {
-      const response = await fetch("/api/device/targets");
+      const response = await fetch("/api/device/targets", { signal: request.signal, cache: "no-store" });
       if (!response.ok) throw new Error("기기 목록을 불러오지 못했습니다.");
       const {devices}: {devices: DeviceTarget[]} = await response.json();
+      if (request.signal.aborted) return;
       setTargets(devices);
-      if (autoStart && devices.length === 1) await startDeviceStream(devices[0]);
+      const target = previousDevice.current ? devices.find(d => d.deviceId === previousDevice.current)
+        : devices.length === 1 ? devices[0] : undefined;
+      if (target && !starting.current && ["idle", "error"].includes(latestState.current.status)) {
+        await startDeviceStream(target);
+      }
     } catch (error) {
-      setPickerError(String(error));
+      if (!request.signal.aborted) setPickerError(String(error));
     } finally {
-      setLoadingTargets(false);
+      if (!request.signal.aborted) setLoadingTargets(false);
     }
   }
-  React.useEffect(() => { void refreshTargets(true); }, []);
 
   async function startDeviceStream(target: DeviceTarget) {
+    starting.current?.abort();
+    const request = new AbortController();
+    starting.current = request;
+    previousDevice.current = target.deviceId;
     setSwitching(true);
     setPickerError("");
     setOverlays([]);
     try {
       const response = await fetch("/api/device/start", {
+        signal: request.signal,
         method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(target),
       });
       const state = await response.json();
       if (!response.ok) throw new Error(state.error || "기기를 연결하지 못했습니다.");
-      setDeviceState(state);
     } catch (error) {
-      setPickerError(String(error));
+      if (!request.signal.aborted) setPickerError(String(error));
     } finally {
-      setSwitching(false);
+      if (starting.current === request) starting.current = null;
+      if (!request.signal.aborted) setSwitching(false);
     }
   }
 
