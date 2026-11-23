@@ -1,0 +1,63 @@
+@import "@fontsource-variable/inter";
+@import "@fontsource-variable/jetbrains-mono";
+@import "tailwindcss";
+
+@theme {
+  --default-font-family: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --default-mono-font-family: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-sans: "Inter Variable", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono Variable", ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
+}
+
+/* Low-profile scrollbar that doesn't change on hover. Browsers normally swap
+   the thumb to a more prominent color on hover/active — we pin every state to
+   the same translucent neutral. */
+.scrollbar-quiet {
+  scrollbar-width: thin;
+  scrollbar-color: rgb(115 115 115 / 0.15) transparent;
+}
+.scrollbar-quiet::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.scrollbar-quiet::-webkit-scrollbar-track {
+  background: transparent;
+}
+.scrollbar-quiet::-webkit-scrollbar-thumb,
+.scrollbar-quiet::-webkit-scrollbar-thumb:hover,
+.scrollbar-quiet::-webkit-scrollbar-thumb:active {
+  background-color: rgb(115 115 115 / 0.15);
+  border-radius: 3px;
+}
+@media (prefers-color-scheme: dark) {
+  .scrollbar-quiet {
+    scrollbar-color: rgb(212 212 212 / 0.10) transparent;
+  }
+  .scrollbar-quiet::-webkit-scrollbar-thumb,
+  .scrollbar-quiet::-webkit-scrollbar-thumb:hover,
+  .scrollbar-quiet::-webkit-scrollbar-thumb:active {
+    background-color: rgb(212 212 212 / 0.10);
+  }
+}
+
+main > section { container-type: size; } main > section > div { --viewer-height: 100cqh; }
+
+main {
+  --entry-width: clamp(216px, 24vw, 320px);
+  --commands-width: 320px;
+  --phone-width: max(140px, calc(min(100vw, 1392px) - var(--entry-width) - var(--commands-width) - 64px));
+}
+main[data-collapsed="true"] { --commands-width: 40px; }
+.viewer-placeholder { max-height: calc(var(--phone-width) * 19 / 9); }
+.viewer-stream {
+  width: auto;
+  height: auto;
+  max-height: calc(100dvh - 4rem);
+  max-width: max(140px, calc(var(--phone-width) - 64px));
+}

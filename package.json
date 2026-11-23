@@ -1,0 +1,26 @@
+{
+  "name": "maestro-gpui",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "web": "node server/main.js",
+    "desktop": "cargo run --locked",
+    "test": "node --test",
+    "preweb": "npm --prefix web run build"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "^3.0.143",
+    "@ai-sdk/google": "^3.0.148",
+    "@ai-sdk/mcp": "^1.0.105",
+    "@ai-sdk/openai": "^3.0.145",
+    "@ai-sdk/openai-compatible": "^2.0.94",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "ai": "^6.0.336",
+    "open": "^10.2.0",
+    "yaml": "^2.9.1"
+  }
+}
