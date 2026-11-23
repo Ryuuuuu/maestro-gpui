@@ -1,10 +1,56 @@
 import test from "node:test";
 import assert from "node:assert/strict";
 import { once } from "node:events";
+import { mkdtemp, rm, readFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { basename, join } from "node:path";
+import { flowLibrary } from "../server/library.js";
 import http from "node:http";
 import { flowHistory, importFlow } from "../server/flows.js";
 import { createViewerServer } from "../server/http.js";
 import { openSession } from "../server/session.js";
+
+test("library opens at flows, respects the selected name and cancellation", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "viewer-flows-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  let choice = "로그인-선택.yaml";
+  const library = flowLibrary(dir, async (directory, suggested) => {
+    assert.equal(directory, dir);
+    assert.equal(suggested, "로그인.yaml");
+    return choice && join(dir, choice);
+  });
+  const yaml = "appId: example.app\n---\n- back\n";
+  const names = [basename(await library.save("로그인", yaml))];
+  choice = null;
+  assert.equal(await library.save("로그인", yaml), null);
+  assert.deepEqual((await library.list("로그")).sort(), names.sort());
+  assert.deepEqual(await library.list("결제"), []);
+  for (const name of names) {
+    assert.equal(await readFile(join(dir, name), "utf8"), yaml);
+    assert.deepEqual(await library.steps(name), [{ files: [join(dir, name)] }]);
+  }
+  await assert.rejects(library.steps("../outside.yaml"));
+});
+
+test("editor saves valid YAML and preserves the original on invalid edits or conflicts", async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), "viewer-edit-"));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const library = flowLibrary(dir, (dir, name) => join(dir, name));
+  const base = "- back\n";
+  const name = basename(await library.save("편집", base));
+  assert.equal(await library.readDocument(name), base);
+  await assert.rejects(library.edit(name, base, "- ["));
+  assert.equal(await library.readDocument(name), base);
+  const attempts = await Promise.allSettled(
+    ["- hideKeyboard\n", "- scroll\n"].map((text) =>
+      library.edit(name, base, text),
+    ),
+  );
+  assert.equal(attempts.filter((a) => a.status === "fulfilled").length, 1);
+  await assert.rejects(library.edit(name, base, "- back\n"));
+  assert.notEqual(await library.readDocument(name), base);
+  await assert.rejects(library.readDocument("../outside.yaml"));
+});
 
 test("successful actions retain device, execution order and per-call variables", () => {
   const h = flowHistory(),
@@ -75,7 +121,10 @@ test(
     provider.listen(0, "127.0.0.1");
     await once(provider, "listening");
     t.after(() => provider.close());
+    const directory = await mkdtemp(join(tmpdir(), "viewer-mcp-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
     const session = await openSession({
+      library: flowLibrary(directory, (dir, name) => join(dir, name)),
       readModelConfig: () => ({
         MODEL_PROVIDER: "local",
         MODEL: "fixture",
@@ -105,6 +154,16 @@ test(
       await fetch(base + "/api/flows/" + history[0].id)
     ).text();
     assert.equal(file, yaml);
+    const saved = await fetch(base + "/api/library/save/" + history[0].id, {
+      method: "POST",
+    });
+    assert.equal(saved.status, 201);
+    const name = basename((await saved.json()).path);
+    assert.deepEqual(await (await fetch(base + "/api/library")).json(), [name]);
+    assert.equal(
+      (await post("/api/prompt", { prompt: "/run " + name, device })).text,
+      "동선 실행 완료",
+    );
     assert.equal(
       (await post("/api/flows/run", { yaml: file, device })).text,
       "동선 실행 완료",

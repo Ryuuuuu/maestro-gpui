@@ -2,6 +2,7 @@
 import React from "react";
 import { createRoot } from "react-dom/client";
 import "./styles.css";
+import { Inspection } from "./Inspection";
 import { Prompt } from "./Prompt";
 
 type CommandStatus = "pending" | "started" | "completed" | "failed" | "warned" | "skipped";
@@ -591,12 +592,33 @@ const HID: Record<string, number> = {
   ArrowRight: 79, ArrowLeft: 80, ArrowDown: 81, ArrowUp: 82,
 };
 
-function useKeyboardInput() {
+function useKeyboardInput(device: DeviceState) {
+  const hardware = React.useRef<string | undefined>(undefined);
+  const queue = React.useRef(Promise.resolve());
+  const [error, setError] = React.useState("");
+  const tap = React.useCallback((code: number, shift = false) => {
+    const serial = device.deviceId;
+    if (device.platform !== "android" || !serial) return;
+    hardware.current = serial;
+    queue.current = queue.current.then(async () => {
+      const response = await fetch("/api/device/keyboard",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify({device:serial,code,shift})});
+      if (!response.ok) throw new Error((await response.json()).error);
+      setError("");
+    }).catch(e=>{hardware.current=undefined;setError(String(e));});
+  }, [device.deviceId,device.platform]);
   React.useEffect(() => {
     function handle(action: "Down" | "Up", e: KeyboardEvent): boolean {
+      if ((e.target as Element | null)?.closest("nav, .inspection-layout") || e.key === "Tab") return false;
       if (e.metaKey || e.ctrlKey) return false; // leave browser shortcuts alone
       const tag = (e.target as Element | null)?.tagName;
-      if (tag === "INPUT" || tag === "TEXTAREA") return false;
+      if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT" || (e.target as Element | null)?.closest("aside")) return false;
+      const language = e.code === "Lang1" || e.key === "HangulMode";
+      if (device.platform === "android" && device.deviceId && (language || hardware.current === device.deviceId)) {
+        const code = language ? 144 : HID[e.code];
+        if (!code) return false;
+        if (action === "Down" && !(language && e.repeat)) tap(code,e.shiftKey);
+        return true;
+      }
       const code = HID[e.code];
       if (code == null) return false;
       sendInput({ kind: "key", action, code });
@@ -610,7 +632,8 @@ function useKeyboardInput() {
       window.removeEventListener("keydown", onDown);
       window.removeEventListener("keyup", onUp);
     };
-  }, []);
+  }, [tap, device.deviceId, device.platform]);
+  return {toggleLanguage: () => tap(144), error};
 }
 
 function GestureLayer() {
@@ -678,10 +701,11 @@ function HardwareButton({ name, label, hideForPlatform, platform, children }: {
   );
 }
 
-function HardwareRail({ platform }: { platform?: string }) {
+function HardwareRail({ platform, toggleLanguage }: { platform?: string; toggleLanguage?: () => void }) {
   if (platform !== "android" && platform !== "ios") return null;
   return (
     <div className="flex shrink-0 flex-col gap-1.5 self-start rounded-lg border border-white/40 bg-white/30 p-1.5 shadow-sm backdrop-blur-md dark:border-white/20 dark:bg-white/10">
+      {platform === "android" && toggleLanguage && <button title="기기 키보드 한/영 전환" aria-label="기기 키보드 한/영 전환" className="h-8 w-8 rounded-md border text-xs" onClick={toggleLanguage}>한/영</button>}
       <HardwareButton name="power" label="Power">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" className="h-4 w-4">
           <path d="M12 3v9" /><path d="M7 7a7 7 0 1 0 10 0" />
@@ -726,11 +750,13 @@ function DevicePanel({
   device,
   platform,
   placeholderMessage,
+  toggleLanguage,
 }: {
   rows: CommandEntry[];
   device?: React.ReactNode;
   platform?: string;
   placeholderMessage?: string;
+  toggleLanguage?: () => void;
 }) {
   const isRunning = rows.some((r) => r.status === "started");
   // Hold the "running" tint for a moment after the last command stops so the bg
@@ -758,7 +784,7 @@ function DevicePanel({
           >
             {device}
           </div>
-          <HardwareRail platform={platform} />
+          <HardwareRail platform={platform} toggleLanguage={toggleLanguage} />
         </>
       ) : (
         <div className="viewer-placeholder flex aspect-[9/19] h-[calc(var(--viewer-height)-4rem)] shrink-0 flex-col items-center justify-center gap-3 rounded-[2rem] border-2 border-dashed border-neutral-300 bg-neutral-50/40 px-6 text-center backdrop-blur-sm dark:border-neutral-700 dark:bg-neutral-900/30">
@@ -790,6 +816,8 @@ export function ViewerLayout({
   onClear,
   deviceState,
   overlays = [],
+  inspection = false,
+  keyboard,
 }: {
   rows: CommandEntry[];
   collapsed: boolean;
@@ -797,6 +825,8 @@ export function ViewerLayout({
   onClear: () => void;
   deviceState: DeviceState;
   overlays?: DeviceOverlay[];
+  inspection?: boolean;
+  keyboard?: {toggleLanguage:()=>void; error:string};
 }) {
   const device: React.ReactNode = deviceState.status === "streaming" && deviceState.streamUrl ? (
     <>
@@ -814,10 +844,15 @@ export function ViewerLayout({
   return (
     <main data-collapsed={collapsed} className="flex h-screen overflow-x-auto overflow-y-hidden bg-neutral-100 text-neutral-700 dark:bg-neutral-950 dark:text-neutral-200">
       <section className="flex min-h-0 min-w-fit flex-1 items-center justify-center">
-        <div className="flex h-[calc(100dvh-2rem)] w-full max-w-[1392px] items-stretch">
-          <Prompt device={deviceState.deviceId} />
-          <CommandsPanel rows={rows} collapsed={collapsed} onToggle={onToggle} onClear={onClear} />
+        <div className="flex h-[calc(var(--viewer-height)-2rem)] w-full max-w-[1392px] items-stretch">
+          <div className={inspection ? "hidden" : "contents"}>
+            <Prompt device={deviceState.deviceId} />
+            <CommandsPanel rows={rows} collapsed={collapsed} onToggle={onToggle} onClear={onClear} />
+          </div>
+          <Inspection visible={inspection} />
+          {keyboard?.error && <span role="alert">{keyboard.error}</span>}
           <DevicePanel
+            toggleLanguage={keyboard?.toggleLanguage}
             rows={rows}
             device={device}
             platform={deviceState.platform}
@@ -829,7 +864,13 @@ export function ViewerLayout({
   );
 }
 
+function subscribePage(notify: () => void) {
+  window.addEventListener("hashchange", notify);
+  return () => window.removeEventListener("hashchange", notify);
+}
+
 function App() {
+  const inspection = React.useSyncExternalStore(subscribePage, () => location.hash === "#/inspection");
   const [overlays, setOverlays] = React.useState<DeviceOverlay[]>([]);
   const [commandRows, setCommandRows] = React.useState<CommandEntry[]>([]);
   const [deviceState, setDeviceState] = React.useState<DeviceState>({ status: "idle" });
@@ -837,7 +878,7 @@ function App() {
   const didAutoStartDeviceStream = React.useRef(false);
 
   useInputFlushLoop();
-  useKeyboardInput();
+  const keyboard = useKeyboardInput(deviceState);
 
   React.useEffect(() => {
     const stream = new EventSource("/api/events/stream");
@@ -915,14 +956,28 @@ function App() {
   }
 
   return (
-    <ViewerLayout
+    <div className="viewer-app flex h-dvh flex-col bg-neutral-100 text-neutral-700 dark:bg-neutral-950 dark:text-neutral-200">
+      <nav aria-label="주 메뉴" className="h-12 shrink-0 border-b border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
+        <div className="mx-auto flex h-full max-w-[1392px] gap-2 px-4">
+          {([["#/flows","동선 생성",!inspection],["#/inspection","금취 점검",inspection]] as const).map(([href,label,active]) =>
+            <a key={href} href={href} aria-current={active ? "page" : undefined}
+              className={`flex items-center border-b-2 px-3 text-sm font-medium ${active ? "border-indigo-600 text-indigo-700 dark:border-indigo-400 dark:text-indigo-300" : "border-transparent hover:bg-neutral-100 dark:hover:bg-neutral-800"}`}>{label}</a>
+          )}
+        </div>
+      </nav>
+      <div className="min-h-0 flex-1">
+      <ViewerLayout
+      inspection={inspection}
       rows={commandRows}
       collapsed={commandsCollapsed}
       onToggle={() => setCommandsCollapsed((c) => !c)}
       onClear={() => setCommandRows([])}
+      keyboard={keyboard}
       deviceState={deviceState}
       overlays={overlays}
-    />
+      />
+      </div>
+    </div>
   );
 }
 

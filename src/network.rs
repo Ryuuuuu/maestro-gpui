@@ -15,6 +15,8 @@ pub enum Update {
     State(Value),
     Output(String),
     Flows(Vec<Value>),
+    Library(Vec<String>),
+    Document(String, bool, Result<String, String>),
     Reply(Result<(), String>),
 }
 
@@ -85,9 +87,21 @@ impl Connection {
         });
         let (input, queue) = mpsc::channel::<String>();
         let endpoint = format!("{url}/api/device/input");
+        let keyboard_url = format!("{url}/api/device/keyboard");
+        let key_tx = sender.clone();
         thread::spawn(move || {
             let agent = ureq::Agent::new_with_defaults();
             for cmd in queue {
+                if cmd.starts_with('{') {
+                    if let Err(e) = agent
+                        .post(&keyboard_url)
+                        .header("Content-Type", "application/json")
+                        .send(cmd.as_str())
+                    {
+                        let _ = key_tx.send(Update::Output(format!("× 키보드 연결 실패: {e}\n")));
+                    }
+                    continue;
+                }
                 let _ = agent
                     .post(&endpoint)
                     .header("Content-Type", "text/plain")
@@ -118,30 +132,72 @@ impl Connection {
         });
     }
 
-    pub fn save_flow(&self, id: String, path: std::path::PathBuf) {
-        use std::io::Write;
-        let url = format!("{}/api/flows/{id}", self.url);
+    pub fn list_library(&self) {
+        let url = format!("{}/api/library", self.url);
         let tx = self.sender.clone();
         thread::spawn(move || {
-            let write = || -> Result<(), Box<dyn std::error::Error>> {
-                let bytes = ureq::get(url).call()?.into_body().read_to_vec()?;
-                let mut tmp = tempfile::NamedTempFile::new_in(
-                    path.parent().unwrap_or(std::path::Path::new(".")),
-                )?;
-                tmp.write_all(&bytes)?;
-                tmp.persist(&path)?;
-                Ok(())
+            let result = ureq::get(url)
+                .call()
+                .and_then(|mut r| r.body_mut().read_json());
+            let _ = tx.send(match result {
+                Ok(names) => Update::Library(names),
+                Err(e) => Update::Output(format!("× {e}\n")),
+            });
+        });
+    }
+
+    pub fn document(&self, name: String, edit: Option<(String, String)>) {
+        let url = format!("{}/api/library/document", self.url);
+        let tx = self.sender.clone();
+        thread::spawn(move || {
+            let saving = edit.is_some();
+            let call = || -> Result<String, String> {
+                let body = match &edit {
+                    Some((base, text)) => json!({"name":name,"base":base,"text":text}),
+                    None => json!({"name":name}),
+                };
+                let mut response = ureq::post(url)
+                    .config()
+                    .http_status_as_error(false)
+                    .build()
+                    .send_json(body)
+                    .map_err(|e| e.to_string())?;
+                let ok = response.status().is_success();
+                let body: Value = response.body_mut().read_json().map_err(|e| e.to_string())?;
+                if !ok {
+                    return Err(body["error"].as_str().unwrap_or("파일 요청 실패").into());
+                }
+                Ok(edit
+                    .map(|(_, text)| text)
+                    .unwrap_or_else(|| body["text"].as_str().unwrap_or_default().to_owned()))
             };
-            let msg = match write() {
-                Ok(()) => format!("✓ {}\n", path.display()),
+            let result = call();
+            let _ = tx.send(Update::Document(name, saving, result));
+        });
+    }
+
+    pub fn save_flow(&self, id: String) {
+        let url = format!("{}/api/library/save/{id}", self.url);
+        let tx = self.sender.clone();
+        thread::spawn(move || {
+            let result = ureq::post(url)
+                .send_empty()
+                .and_then(|mut r| r.body_mut().read_json::<Value>());
+            let msg = match result {
+                Ok(body) => match body["path"].as_str() {
+                    Some(path) => format!("✓ {path} 저장\n"),
+                    None => return,
+                },
                 Err(e) => format!("× {e}\n"),
             };
             let _ = tx.send(Update::Output(msg));
         });
     }
 
-    pub fn prompt(&self, prompt: String) {
-        self.execute("/api/prompt", move || Ok(json!({"prompt":prompt})));
+    pub fn prompt(&self, prompt: String, device: Value) {
+        self.execute("/api/prompt", move || {
+            Ok(json!({"prompt":prompt,"device":device}))
+        });
     }
 
     pub fn replay(&self, path: std::path::PathBuf, device: Value) {

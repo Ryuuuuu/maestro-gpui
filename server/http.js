@@ -1,4 +1,5 @@
 import { importFlow } from "./flows.js";
+import { androidKeyboard } from "./android-keyboard.js";
 import http from "node:http";
 import { readFile } from "node:fs/promises";
 
@@ -12,7 +13,9 @@ const routes = new Map([
 
 export function createViewerServer(session) {
   let busy = false;
-  return http.createServer(async (req, res) => {
+  let saving = false;
+  const keyboard = androidKeyboard();
+  const server = http.createServer(async (req, res) => {
     function reply(status, value) {
       res.writeHead(status, {
         "Content-Type": "application/json",
@@ -36,6 +39,61 @@ export function createViewerServer(session) {
         );
         res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
         return res.end(html);
+      }
+      if (req.method === "POST" && req.url === "/api/device/keyboard") {
+        if (req.headers["content-type"]?.split(";")[0] !== "application/json")
+          return reply(415, { error: "Expected JSON" });
+        let data = "";
+        for await (const chunk of req) {
+          data += chunk;
+          if (data.length > 1024) return reply(413, { error: "Invalid key" });
+        }
+        const { device, code, shift } = JSON.parse(data);
+        await keyboard.tap(device, code, shift);
+        return reply(200, { ok: true });
+      }
+      if (req.method === "POST" && req.url === "/api/library/document") {
+        if (req.headers["content-type"]?.split(";")[0] !== "application/json")
+          return reply(415, { error: "Expected JSON" });
+        let data = "";
+        req.setEncoding("utf8");
+        for await (const chunk of req) {
+          data += chunk;
+          if (data.length > 20 * 1024 * 1024)
+            return reply(413, { error: "파일이 너무 큽니다." });
+        }
+        try {
+          const body = JSON.parse(data);
+          if (Object.hasOwn(body, "text")) {
+            await session.library.edit(body.name, body.base, body.text);
+            return reply(200, { saved: true });
+          }
+          return reply(200, {
+            text: await session.library.readDocument(body.name),
+          });
+        } catch (error) {
+          return reply(400, { error: error.message });
+        }
+      }
+      if (req.method === "GET" && req.url === "/api/library")
+        return reply(200, await session.library.list());
+      if (req.method === "POST" && req.url.startsWith("/api/library/save/")) {
+        const id = req.url.slice("/api/library/save/".length);
+        const entry = session.flows.list().find((r) => r.id === id);
+        if (!entry)
+          return reply(404, { error: "저장할 성공 동선을 찾을 수 없습니다." });
+        if (saving)
+          return reply(409, { error: "저장 창이 이미 열려 있습니다." });
+        saving = true;
+        try {
+          const path = await session.library.save(
+            entry.label,
+            session.flows.export(id),
+          );
+          return reply(path ? 201 : 200, { path });
+        } finally {
+          saving = false;
+        }
       }
       if (req.method === "GET" && req.url === "/api/flows")
         return reply(200, session.flows.list());
@@ -78,7 +136,10 @@ export function createViewerServer(session) {
             }
             if (typeof device !== "string" || !device.trim())
               throw new Error("연결된 기기가 필요합니다.");
-          } else prompt = body.prompt;
+          } else {
+            prompt = body.prompt;
+            device = body.device;
+          }
         } catch (error) {
           return reply(400, { error: error.message });
         }
@@ -114,7 +175,11 @@ export function createViewerServer(session) {
         try {
           const text = replay
             ? await session.replay(steps, device, streaming ? emit : undefined)
-            : await session.prompt(prompt.trim(), streaming ? emit : undefined);
+            : await session.prompt(
+                prompt.trim(),
+                streaming ? emit : undefined,
+                device,
+              );
           if (streaming) {
             emit("done", text);
             res.end();
@@ -154,4 +219,6 @@ export function createViewerServer(session) {
       if (!res.headersSent) reply(500, { error: error.message });
     }
   });
+  server.on("close", keyboard.close);
+  return server;
 }

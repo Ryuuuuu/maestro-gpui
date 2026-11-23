@@ -1,3 +1,4 @@
+mod inspection;
 mod launcher;
 mod network;
 mod overlay;
@@ -21,6 +22,8 @@ use std::{
 use style::{Assets, Palette, hid, icon, yaml};
 
 struct Viewer {
+    inspection: bool,
+    checklist: inspection::Checklist,
     conn: Connection,
     rows: BTreeMap<u64, Value>,
     device: Value,
@@ -38,6 +41,16 @@ struct Viewer {
     busy: bool,
     replaying: bool,
     flow_choices: Vec<Value>,
+    search: Entity<InputState>,
+    editor: Entity<InputState>,
+    hardware_device: Option<String>,
+    editor_open: bool,
+    editor_pending: bool,
+    editor_name: String,
+    editor_base: String,
+    editor_message: String,
+    library: Vec<String>,
+    browsing: bool,
     terminal: String,
     terminal_scroll: ScrollHandle,
 }
@@ -45,6 +58,26 @@ struct Viewer {
 impl Viewer {
     fn new(url: String, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let input = cx.new(|cx| InputState::new(window, cx).placeholder("Ask Maestro…"));
+        let editor = cx.new(|cx| InputState::new(window, cx).multi_line(true));
+        cx.subscribe_in(&editor, window, |this, _, event, _, cx| {
+            if matches!(event, InputEvent::Change) {
+                this.editor_message.clear();
+                cx.notify();
+            }
+        })
+        .detach();
+        let search = cx.new(|cx| InputState::new(window, cx).placeholder("저장된 동선 검색"));
+        cx.subscribe_in(&search, window, |this, _, event, _, cx| {
+            if matches!(event, InputEvent::Focus) {
+                this.conn.list_library();
+                this.browsing = true;
+            }
+            if matches!(event, InputEvent::Change) {
+                this.browsing = true;
+            }
+            cx.notify();
+        })
+        .detach();
         cx.subscribe_in(&input, window, |this, field, event, _, cx| {
             if matches!(event, InputEvent::PressEnter { .. }) && !this.busy {
                 let prompt = field.read(cx).value().to_string();
@@ -52,7 +85,7 @@ impl Viewer {
                     this.busy = true;
                     this.append_output(&format!("$ {}\n", prompt.trim()));
                     this.terminal_scroll.scroll_to_bottom();
-                    this.conn.prompt(prompt);
+                    this.conn.prompt(prompt, this.device["deviceId"].clone());
                     cx.notify();
                 }
             }
@@ -75,6 +108,8 @@ impl Viewer {
         })
         .detach();
         Self {
+            inspection: false,
+            checklist: inspection::Checklist::new(),
             conn: Connection::new(url),
             rows: BTreeMap::new(),
             device: Value::Null,
@@ -92,6 +127,16 @@ impl Viewer {
             busy: false,
             replaying: false,
             flow_choices: Vec::new(),
+            search,
+            editor,
+            hardware_device: None,
+            editor_open: false,
+            editor_pending: false,
+            editor_name: String::new(),
+            editor_base: String::new(),
+            editor_message: String::new(),
+            library: Vec::new(),
+            browsing: false,
             terminal: String::new(),
             terminal_scroll: ScrollHandle::new(),
         }
@@ -144,6 +189,26 @@ impl Viewer {
                         self.overlays.truncate(8);
                     }
                 }
+                Update::Document(name, saved, result) => {
+                    self.editor_pending = false;
+                    match result {
+                        Ok(text) => {
+                            self.editor_name = name;
+                            self.editor_base = text.clone();
+                            if !saved {
+                                self.editor
+                                    .update(cx, |field, cx| field.set_value(text, window, cx));
+                            }
+                            self.editor_message = if saved {
+                                "저장했습니다.".into()
+                            } else {
+                                String::new()
+                            };
+                        }
+                        Err(error) => self.editor_message = error,
+                    }
+                }
+                Update::Library(names) => self.library = names,
                 Update::Flows(rows) => {
                     self.flow_choices.clear();
                     if rows.len() == 1 {
@@ -189,20 +254,7 @@ impl Viewer {
 
     fn choose_save(&mut self, id: String, cx: &mut Context<Self>) {
         self.flow_choices.clear();
-        let directory = std::env::current_dir().unwrap_or_default();
-        let dialog = cx.prompt_for_new_path(&directory, Some("maestro-flow.yaml"));
-        cx.spawn(async move |this, cx| {
-            let picked = dialog.await;
-            let _ = this.update(cx, |s, cx| {
-                match picked {
-                    Ok(Ok(Some(path))) => s.conn.save_flow(id, path),
-                    Ok(Err(e)) => s.append_output(&format!("× {e}\n")),
-                    _ => {}
-                }
-                cx.notify();
-            });
-        })
-        .detach();
+        self.conn.save_flow(id);
         cx.notify();
     }
 
@@ -211,7 +263,7 @@ impl Viewer {
             files: true,
             directories: false,
             multiple: false,
-            prompt: Some("파일 열어 실행".into()),
+            prompt: Some("동선 파일 실행".into()),
         });
         cx.spawn(async move |this, cx| {
             let picked = dialog.await;
@@ -265,6 +317,138 @@ impl Viewer {
             }
             let _ = self.conn.input.send(cmd);
         }
+    }
+
+    fn hardware_key(&mut self, code: u8, shift: bool) {
+        if let Some(device) = self.device["deviceId"].as_str() {
+            self.hardware_device = Some(device.to_owned());
+            let body = serde_json::json!({"device":device,"code":code,"shift":shift});
+            let _ = self.conn.input.send(body.to_string());
+        }
+    }
+
+    fn editor_panel(&self, p: Palette, cx: &Context<Self>) -> Div {
+        let dirty = self.editor.read(cx).value().as_str() != self.editor_base;
+        let available = !self.editor_pending;
+        let mut panel = div()
+            .w(px(280.))
+            .flex_none()
+            .my_2()
+            .ml_2()
+            .p_3()
+            .flex()
+            .flex_col()
+            .gap_2()
+            .bg(p.panel())
+            .rounded_lg()
+            .border_1()
+            .border_color(p.border())
+            .text_xs()
+            .child(
+                div()
+                    .flex()
+                    .justify_between()
+                    .child("동선 파일 수정")
+                    .child(
+                        div()
+                            .id("fold-editor")
+                            .cursor_pointer()
+                            .child("‹ 접기")
+                            .on_click(cx.listener(|s, _, w, cx| {
+                                s.editor_open = false;
+                                s.focus.focus(w);
+                                cx.notify();
+                            })),
+                    ),
+            )
+            .child(
+                div()
+                    .id("editable-files")
+                    .max_h(px(110.))
+                    .overflow_y_scroll()
+                    .when(self.library.is_empty(), |d| {
+                        d.child("저장된 동선이 없습니다")
+                    })
+                    .children(self.library.iter().enumerate().map(|(i, name)| {
+                        let file = name.clone();
+                        div()
+                            .id(("edit-file", i))
+                            .px_2()
+                            .py_1()
+                            .child(name.clone())
+                            .when(name == &self.editor_name, |d| d.bg(p.border()))
+                            .when(available && !dirty, |d| {
+                                d.cursor_pointer().on_click(cx.listener(move |s, _, _, cx| {
+                                    s.editor_pending = true;
+                                    s.conn.document(file.clone(), None);
+                                    cx.notify();
+                                }))
+                            })
+                    })),
+            );
+        if !self.editor_name.is_empty() {
+            panel = panel
+                .child(
+                    Input::new(&self.editor)
+                        .disabled(!available)
+                        .h_full()
+                        .font_family("JetBrains Mono")
+                        .flex_1(),
+                )
+                .child(
+                    div()
+                        .flex()
+                        .gap_2()
+                        .child(
+                            div()
+                                .id("save-edit")
+                                .px_2()
+                                .py_1()
+                                .border_1()
+                                .rounded_md()
+                                .child("저장")
+                                .when(available && dirty, |d| {
+                                    d.cursor_pointer().on_click(cx.listener(|s, _, _, cx| {
+                                        s.editor_pending = true;
+                                        s.conn.document(
+                                            s.editor_name.clone(),
+                                            Some((
+                                                s.editor_base.clone(),
+                                                s.editor.read(cx).value().to_string(),
+                                            )),
+                                        );
+                                        cx.notify();
+                                    }))
+                                })
+                                .when(!available || !dirty, |d| d.opacity(0.5)),
+                        )
+                        .child(
+                            div()
+                                .id("reload-edit")
+                                .px_2()
+                                .py_1()
+                                .border_1()
+                                .rounded_md()
+                                .child(if dirty {
+                                    "변경 버리고 다시 열기"
+                                } else {
+                                    "다시 열기"
+                                })
+                                .when(available, |d| {
+                                    d.cursor_pointer().on_click(cx.listener(|s, _, _, cx| {
+                                        s.editor_pending = true;
+                                        s.conn.document(s.editor_name.clone(), None);
+                                        cx.notify();
+                                    }))
+                                }),
+                        ),
+                );
+        }
+        panel.child(if dirty && self.editor_message.is_empty() {
+            "저장하지 않은 변경 사항".to_owned()
+        } else {
+            self.editor_message.clone()
+        })
     }
 
     fn commands(&self, p: Palette, cx: &Context<Self>) -> Div {
@@ -587,6 +771,25 @@ impl Viewer {
             .border_color(p.border())
             .bg(p.panel())
             .shadow_sm();
+        if platform == "android" {
+            rail = rail.child(
+                div()
+                    .id("keyboard-language")
+                    .size_8()
+                    .flex()
+                    .items_center()
+                    .justify_center()
+                    .border_1()
+                    .rounded_md()
+                    .cursor_pointer()
+                    .text_xs()
+                    .child("한/영")
+                    .on_click(cx.listener(|s, _, w, _| {
+                        s.focus.focus(w);
+                        s.hardware_key(144, false);
+                    })),
+            );
+        }
         for name in [
             "power",
             "volumeUp",
@@ -656,12 +859,72 @@ impl Render for Viewer {
             window.appearance(),
             WindowAppearance::Dark | WindowAppearance::VibrantDark
         ));
-        let height = (f32::from(window.viewport_size().height) - 64.).max(64.);
+        let nav = div()
+            .w_full()
+            .h(px(48.))
+            .flex_none()
+            .flex()
+            .justify_center()
+            .bg(p.color(0xffffff, 0x171717))
+            .border_b_1()
+            .border_color(p.border())
+            .child(
+                div()
+                    .flex()
+                    .size_full()
+                    .max_w(px(1392.))
+                    .gap_2()
+                    .px_4()
+                    .children([(false, "동선 생성"), (true, "금취 점검")].into_iter().map(
+                        |(inspection, label)| {
+                            let active = self.inspection == inspection;
+                            div()
+                                .id(label)
+                                .h_full()
+                                .flex()
+                                .items_center()
+                                .px_3()
+                                .text_sm()
+                                .font_weight(FontWeight::MEDIUM)
+                                .cursor_pointer()
+                                .border_b_2()
+                                .border_color(if active {
+                                    p.color(0x4f46e5, 0x818cf8)
+                                } else {
+                                    transparent_black()
+                                })
+                                .text_color(if active {
+                                    p.color(0x4338ca, 0xa5b4fc)
+                                } else {
+                                    p.text()
+                                })
+                                .child(label)
+                                .on_click(cx.listener(move |s, _, w, cx| {
+                                    s.inspection = inspection;
+                                    s.focus.focus(w);
+                                    cx.notify();
+                                }))
+                        },
+                    )),
+            );
+        let shell = div()
+            .size_full()
+            .track_focus(&self.focus)
+            .flex()
+            .flex_col()
+            .items_center()
+            .bg(p.background())
+            .text_color(p.text())
+            .text_xs()
+            .font_family("Inter")
+            .child(nav);
+        let height = (f32::from(window.viewport_size().height) - 112.).max(64.);
         let width = (f32::from(window.viewport_size().width) * 0.24).clamp(216., 320.);
         let commands_width = if self.collapsed { 40. } else { 320. };
         let rail = if self.stream.is_some() { 64. } else { 0. };
         let phone_width = (f32::from(window.viewport_size().width).min(1392.)
             - width
+            - if self.editor_open { 280. } else { 0. }
             - commands_width
             - 64.
             - rail)
@@ -682,7 +945,7 @@ impl Render for Viewer {
             )
             .child(
                 div().flex().gap_1().children(
-                    ["성공 동선 저장", "파일 열어 실행"]
+                    ["성공 동선 저장", "동선 파일 실행", "동선 파일 수정"]
                         .into_iter()
                         .enumerate()
                         .map(|(i, label)| {
@@ -699,8 +962,14 @@ impl Render for Viewer {
                                     d.cursor_pointer().on_click(cx.listener(move |s, _, _, cx| {
                                         if i == 0 {
                                             s.conn.list_flows();
-                                        } else {
+                                        } else if i == 1 {
                                             s.choose_run(cx);
+                                        } else {
+                                            s.editor_open = !s.editor_open;
+                                            if s.editor_open {
+                                                s.conn.list_library();
+                                            }
+                                            cx.notify();
                                         }
                                     }))
                                 })
@@ -732,6 +1001,40 @@ impl Render for Viewer {
                         })),
                 )
             })
+            .child(Input::new(&self.search).h(px(32.)).rounded_lg())
+            .when(self.browsing, |d| {
+                let query = self.search.read(cx).value().to_lowercase();
+                let names: Vec<_> = self
+                    .library
+                    .iter()
+                    .filter(|n| n.to_lowercase().contains(&query))
+                    .collect();
+                d.child(
+                    div()
+                        .id("library-files")
+                        .max_h(px(128.))
+                        .overflow_y_scroll()
+                        .when(names.is_empty(), |d| d.child("검색 결과가 없습니다."))
+                        .children(names.into_iter().enumerate().map(|(i, n)| {
+                            let name = n.clone();
+                            div()
+                                .id(("library", i))
+                                .px_2()
+                                .py_1()
+                                .child(name.clone())
+                                .when(!self.busy, |d| {
+                                    d.cursor_pointer().on_click(cx.listener(move |s, _, w, cx| {
+                                        s.input.update(cx, |input, cx| {
+                                            input.set_value(format!("/run {name}"), w, cx)
+                                        });
+                                        s.input.focus_handle(cx).focus(w);
+                                        s.browsing = false;
+                                        cx.notify();
+                                    }))
+                                })
+                        })),
+                )
+            })
             .child(
                 div()
                     .id("terminal")
@@ -751,24 +1054,29 @@ impl Render for Viewer {
                     .child(self.terminal.clone()),
             );
         let input_focus = self.input.focus_handle(cx);
-        let keyboard = move |s: &Viewer, key: &Keystroke, action: &str, w: &Window| {
+        let editor_focus = self.editor.focus_handle(cx);
+        let search_focus = self.search.focus_handle(cx);
+        let keyboard = move |s: &mut Viewer, key: &Keystroke, action: &str, w: &Window| {
             if !input_focus.is_focused(w)
+                && !search_focus.is_focused(w)
+                && !(s.editor_open && editor_focus.is_focused(w))
                 && let Some(code) = hid(key)
             {
-                let _ = s.conn.input.send(format!("key {action} {code}"));
+                if s.device["platform"] == "android"
+                    && (code == 144
+                        || (s.hardware_device.is_some()
+                            && s.hardware_device.as_deref() == s.device["deviceId"].as_str()))
+                {
+                    if action == "Down" {
+                        s.hardware_key(code, key.modifiers.shift);
+                    }
+                } else {
+                    let _ = s.conn.input.send(format!("key {action} {code}"));
+                }
             }
         };
         let keyup = keyboard.clone();
-        div()
-            .size_full()
-            .track_focus(&self.focus)
-            .flex()
-            .flex_col()
-            .items_center()
-            .bg(p.background())
-            .text_color(p.text())
-            .text_xs()
-            .font_family("Inter")
+        shell
             .on_key_down(
                 cx.listener(move |s, e: &KeyDownEvent, w, _| keyboard(s, &e.keystroke, "Down", w)),
             )
@@ -809,8 +1117,14 @@ impl Render for Viewer {
                             .max_w(px(1392.))
                             .h(px(height + 32.))
                             .w_full()
-                            .child(sidebar)
-                            .child(self.commands(p, cx))
+                            .when(self.inspection, |row| {
+                                row.child(self.inspection_panels(p, cx))
+                            })
+                            .when(!self.inspection, |row| {
+                                row.child(sidebar)
+                                    .when(self.editor_open, |d| d.child(self.editor_panel(p, cx)))
+                                    .child(self.commands(p, cx))
+                            })
                             .child(self.device(height, phone_width, p, cx)),
                     ),
             )

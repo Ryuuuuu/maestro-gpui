@@ -4,11 +4,12 @@ import { createOpenAI } from "@ai-sdk/openai";
 import { createAnthropic } from "@ai-sdk/anthropic";
 import { createGoogleGenerativeAI } from "@ai-sdk/google";
 import { createOpenAICompatible } from "@ai-sdk/openai-compatible";
-import { generateText, streamText, stepCountIs } from "ai";
+import { generateText, streamText, stepCountIs, tool, jsonSchema } from "ai";
 import { createInterface } from "node:readline";
 import { createServer } from "node:net";
 import { once } from "node:events";
 import { modelConfig } from "./config.js";
+import { flowLibrary } from "./library.js";
 import { flowHistory } from "./flows.js";
 import { runCodex } from "./codex.js";
 
@@ -36,7 +37,10 @@ export function selectModel(env) {
   }
 }
 
-export async function openSession({ readModelConfig = modelConfig } = {}) {
+export async function openSession({
+  readModelConfig = modelConfig,
+  library = flowLibrary(),
+} = {}) {
   const launchEnv = await modelConfig();
   // Maestro probes the same port range in every process. Ask the OS for
   // independent ephemeral ports when the web and desktop launch together.
@@ -88,6 +92,19 @@ export async function openSession({ readModelConfig = modelConfig } = {}) {
     const flows = flowHistory();
     return {
       flows,
+      library,
+      async runSaved(name, device, emit) {
+        const steps = await library.steps(name);
+        if (!device) {
+          const response = await fetch(viewer + "/api/device/targets");
+          const targets = (await response.json()).devices;
+          if (targets?.length !== 1)
+            throw new Error("실행할 기기를 먼저 연결하거나 선택하세요.");
+          device = targets[0].deviceId;
+        }
+        emit?.("line", "▶ flows/" + name);
+        return this.replay(steps, device, emit);
+      },
       async replay(steps, device, emit) {
         const tools = await client.tools();
         if (!tools.run)
@@ -109,10 +126,42 @@ export async function openSession({ readModelConfig = modelConfig } = {}) {
       },
       viewer,
       close: () => client.close(),
-      async prompt(prompt, emit) {
+      async prompt(prompt, emit, device) {
+        if (/^\/run(?:\s|$)/.test(prompt))
+          return this.runSaved(prompt.slice(4).trim(), device, emit);
         const record = flows.begin(prompt);
         const env = await readModelConfig();
         const tools = await client.tools();
+        tools.search_saved_flows = tool({
+          description:
+            "Search the project flows directory by partial filename; use before running a saved flow. Empty query lists all files.",
+          inputSchema: jsonSchema({
+            type: "object",
+            properties: { query: { type: "string" } },
+            required: ["query"],
+            additionalProperties: false,
+          }),
+          execute: async ({ query }) => ({
+            content: [
+              { type: "text", text: JSON.stringify(await library.list(query)) },
+            ],
+          }),
+        });
+        tools.run_saved_flow = tool({
+          description:
+            "Execute an existing saved flow by its exact filename from search_saved_flows on the current device. Ask for clarification if the request matches several files.",
+          inputSchema: jsonSchema({
+            type: "object",
+            properties: { name: { type: "string" } },
+            required: ["name"],
+            additionalProperties: false,
+          }),
+          execute: async ({ name }) => ({
+            content: [
+              { type: "text", text: await this.runSaved(name, device, emit) },
+            ],
+          }),
+        });
         emit?.(
           "line",
           "• " + env.MODEL_PROVIDER + (env.MODEL ? " / " + env.MODEL : ""),
@@ -141,7 +190,7 @@ export async function openSession({ readModelConfig = modelConfig } = {}) {
           tools,
           prompt,
           system:
-            "Use the connected Maestro MCP tools to carry out the requested device task. Report what you observed in the user’s language.",
+            "Use the connected Maestro MCP tools to carry out the requested device task. When asked to execute a saved flow, search_saved_flows by filename, ask which file if ambiguous, then call run_saved_flow with the exact match. Report what you observed in the user’s language.",
           stopWhen: stepCountIs(32),
           maxRetries: 0,
         };

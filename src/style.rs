@@ -121,6 +121,7 @@ pub fn hid(key: &Keystroke) -> Option<u8> {
     }
     Some(match k.as_str() {
         "0" => 39,
+        "hangul" | "hangulmode" | "lang1" => 144,
         "enter" => 40,
         "escape" => 41,
         "backspace" => 42,

@@ -76,7 +76,7 @@ export async function runCodex(prompt, tools, env, emit) {
               sandbox: "read-only",
               ...(env.MODEL ? { model: env.MODEL } : {}),
               baseInstructions:
-                "You operate the user's device through the provided Maestro tools. The Viewer is already open. Use only the supplied Maestro tools. Reply in the user's language and report actual results.",
+                "You operate the user's device through the provided Maestro tools. The Viewer is already open. Use only the supplied Maestro tools. When asked to execute a saved flow, search_saved_flows by filename, ask which file if ambiguous, then call run_saved_flow with the exact match. Reply in the user's language and report actual results.",
               dynamicTools: Object.entries(tools).map(([name, tool]) => ({
                 type: "function",
                 name,
