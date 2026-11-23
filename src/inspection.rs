@@ -236,6 +236,13 @@ impl Viewer {
                                 s.checklist.log.clear();
                             } else {
                                 s.checklist.start();
+                                let mut files: Vec<_> = s
+                                    .inspection_files
+                                    .iter()
+                                    .map(|n| ("+00:00".to_owned(), format!("선택 동선 · {n}")))
+                                    .collect();
+                                files.append(&mut s.checklist.log);
+                                s.checklist.log = files;
                             }
                             cx.notify();
                         }))
@@ -243,9 +250,8 @@ impl Viewer {
                 )
         };
         let progress = card()
-            .flex_grow()
-            .flex_basis(px(180.))
-            .min_w(px(260.))
+            .flex_1()
+            .min_h_0()
             .child(header("점검 진행", format!("{done} / {total} 완료")))
             .child(
                 div().h(px(3.)).bg(border).child(
@@ -256,6 +262,71 @@ impl Viewer {
                 ),
             )
             .child(table.child(actions));
+        let query = self
+            .inspection_search
+            .read(cx)
+            .value()
+            .trim()
+            .to_lowercase();
+        let matches: Vec<_> = self
+            .library
+            .iter()
+            .filter(|n| n.to_lowercase().contains(&query))
+            .collect();
+        let files = card()
+            .h(relative(0.4))
+            .child(header(
+                "동선 파일 선택",
+                format!("{}개 선택", self.inspection_files.len()),
+            ))
+            .child(
+                div()
+                    .px_3()
+                    .py_2()
+                    .child(gpui_component::input::Input::new(&self.inspection_search).h(px(32.))),
+            )
+            .child(
+                div()
+                    .id("inspect-flow-files")
+                    .overflow_y_scroll()
+                    .px_3()
+                    .pb_2()
+                    .flex_1()
+                    .min_h_0()
+                    .when(matches.is_empty(), |d| {
+                        d.child(if self.library.is_empty() {
+                            "저장된 동선이 없습니다."
+                        } else {
+                            "검색 결과가 없습니다."
+                        })
+                    })
+                    .children(matches.into_iter().enumerate().map(|(i, name)| {
+                        let name = name.clone();
+                        div().py_1().child(
+                            Checkbox::new(("inspect-file", i))
+                                .label(name.clone())
+                                .checked(self.inspection_files.contains(&name))
+                                .disabled(run.started.is_some())
+                                .on_click(cx.listener(move |s, checked: &bool, _, cx| {
+                                    if *checked {
+                                        s.inspection_files.insert(name.clone());
+                                    } else {
+                                        s.inspection_files.remove(&name);
+                                    }
+                                    cx.notify();
+                                })),
+                        )
+                    })),
+            );
+        let center = div()
+            .flex()
+            .flex_col()
+            .gap_3()
+            .flex_grow()
+            .flex_basis(px(180.))
+            .min_w(px(260.))
+            .child(files)
+            .child(progress);
         div()
             .flex()
             .flex_1()
@@ -263,6 +334,6 @@ impl Viewer {
             .py_2()
             .pl_4()
             .child(journal)
-            .child(progress)
+            .child(center)
     }
 }

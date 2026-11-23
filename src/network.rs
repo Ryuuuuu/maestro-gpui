@@ -13,6 +13,8 @@ use std::{
 pub enum Update {
     Event(Value),
     State(Value),
+    Targets(bool, Result<Vec<Value>, String>),
+    Switched(Result<Value, String>),
     Output(String),
     Flows(Vec<Value>),
     Library(Vec<String>),
@@ -66,25 +68,6 @@ impl Connection {
             Update::State,
             sender.clone(),
         );
-        let target_url = url.clone();
-        let state_tx = sender.clone();
-        thread::spawn(move || {
-            let start = || -> Result<(), ureq::Error> {
-                let body: Value = ureq::get(format!("{target_url}/api/device/targets"))
-                    .call()?
-                    .body_mut()
-                    .read_json()?;
-                if let Some([target]) = body["devices"].as_array().map(Vec::as_slice) {
-                    ureq::post(format!("{target_url}/api/device/start")).send_json(target)?;
-                }
-                Ok(())
-            };
-            if let Err(error) = start() {
-                let _ = state_tx.send(Update::State(
-                    json!({"status":"error","message":error.to_string()}),
-                ));
-            }
-        });
         let (input, queue) = mpsc::channel::<String>();
         let endpoint = format!("{url}/api/device/input");
         let keyboard_url = format!("{url}/api/device/keyboard");
@@ -116,6 +99,37 @@ impl Connection {
             generation: Default::default(),
             frame: Default::default(),
         }
+    }
+
+    pub fn refresh_targets(&self, initial: bool) {
+        let url = format!("{}/api/device/targets", self.url);
+        let tx = self.sender.clone();
+        thread::spawn(move || {
+            let result = ureq::get(url)
+                .call()
+                .and_then(|mut r| r.body_mut().read_json::<Value>())
+                .map_err(|e| e.to_string())
+                .and_then(|v| {
+                    v["devices"]
+                        .as_array()
+                        .cloned()
+                        .ok_or("잘못된 기기 목록입니다.".into())
+                });
+            let _ = tx.send(Update::Targets(initial, result));
+        });
+    }
+
+    pub fn switch_device(&self, target: &Value) {
+        let url = format!("{}/api/device/start", self.url);
+        let tx = self.sender.clone();
+        let target = target.clone();
+        thread::spawn(move || {
+            let result = ureq::post(url)
+                .send_json(target)
+                .and_then(|mut r| r.body_mut().read_json())
+                .map_err(|e| e.to_string());
+            let _ = tx.send(Update::Switched(result));
+        });
     }
 
     pub fn list_flows(&self) {

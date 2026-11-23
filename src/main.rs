@@ -23,6 +23,9 @@ use style::{Assets, Palette, hid, icon, yaml};
 
 struct Viewer {
     inspection: bool,
+    targets: Vec<Value>,
+    picker_pending: bool,
+    picker_error: String,
     checklist: inspection::Checklist,
     conn: Connection,
     rows: BTreeMap<u64, Value>,
@@ -42,6 +45,8 @@ struct Viewer {
     replaying: bool,
     flow_choices: Vec<Value>,
     search: Entity<InputState>,
+    inspection_search: Entity<InputState>,
+    inspection_files: std::collections::BTreeSet<String>,
     editor: Entity<InputState>,
     hardware_device: Option<String>,
     editor_open: bool,
@@ -62,6 +67,14 @@ impl Viewer {
         cx.subscribe_in(&editor, window, |this, _, event, _, cx| {
             if matches!(event, InputEvent::Change) {
                 this.editor_message.clear();
+                cx.notify();
+            }
+        })
+        .detach();
+        let inspection_search =
+            cx.new(|cx| InputState::new(window, cx).placeholder("flows/ 파일명 검색"));
+        cx.subscribe_in(&inspection_search, window, |_, _, event, _, cx| {
+            if matches!(event, InputEvent::Change) {
                 cx.notify();
             }
         })
@@ -107,10 +120,15 @@ impl Viewer {
             }
         })
         .detach();
+        let conn = Connection::new(url);
+        conn.refresh_targets(true);
         Self {
             inspection: false,
             checklist: inspection::Checklist::new(),
-            conn: Connection::new(url),
+            conn,
+            targets: Vec::new(),
+            picker_pending: true,
+            picker_error: String::new(),
             rows: BTreeMap::new(),
             device: Value::Null,
             stream: None,
@@ -128,6 +146,8 @@ impl Viewer {
             replaying: false,
             flow_choices: Vec::new(),
             search,
+            inspection_search,
+            inspection_files: Default::default(),
             editor,
             hardware_device: None,
             editor_open: false,
@@ -147,8 +167,28 @@ impl Viewer {
             || Instant::now() < self.running_until + Duration::from_millis(32);
         while let Ok(update) = self.conn.updates.try_recv() {
             changed = true;
+            if matches!(update, Update::Switched(_)) {
+                self.picker_pending = false;
+            }
             match update {
-                Update::State(device) => {
+                Update::Targets(initial, result) => {
+                    self.picker_pending = false;
+                    match result {
+                        Ok(rows) => {
+                            self.targets = rows;
+                            if initial && let [target] = self.targets.as_slice() {
+                                self.picker_pending = true;
+                                self.conn.switch_device(target);
+                            }
+                        }
+                        Err(e) => self.picker_error = e,
+                    }
+                }
+                Update::Switched(Err(e)) => {
+                    self.picker_pending = false;
+                    self.picker_error = e;
+                }
+                Update::State(device) | Update::Switched(Ok(device)) => {
                     let next = device["streamUrl"]
                         .as_str()
                         .filter(|_| device["status"] == "streaming")
@@ -208,7 +248,10 @@ impl Viewer {
                         Err(error) => self.editor_message = error,
                     }
                 }
-                Update::Library(names) => self.library = names,
+                Update::Library(names) => {
+                    self.inspection_files.retain(|n| names.contains(n));
+                    self.library = names;
+                }
                 Update::Flows(rows) => {
                     self.flow_choices.clear();
                     if rows.len() == 1 {
@@ -859,6 +902,81 @@ impl Render for Viewer {
             window.appearance(),
             WindowAppearance::Dark | WindowAppearance::VibrantDark
         ));
+        use gpui_component::{
+            Disableable, Sizable,
+            button::Button,
+            menu::{DropdownMenu, PopupMenuItem},
+        };
+        let view = cx.entity().downgrade();
+        let targets = self.targets.clone();
+        let current = self.device["deviceId"]
+            .as_str()
+            .filter(|_| self.device["status"] != "error")
+            .unwrap_or("")
+            .to_owned();
+        let label = if self.picker_pending {
+            "기기 확인 중…".into()
+        } else if let Some(t) = targets.iter().find(|t| t["deviceId"] == current) {
+            format!("{} · {}", current, t["platform"].as_str().unwrap_or(""))
+        } else if targets.is_empty() {
+            "연결된 기기 없음".into()
+        } else {
+            "기기 선택".into()
+        };
+        let picker = div()
+            .ml_auto()
+            .flex()
+            .items_center()
+            .gap_2()
+            .text_xs()
+            .child(self.picker_error.clone())
+            .child("기기")
+            .child(
+                Button::new("device-picker")
+                    .small()
+                    .label(format!("{label} ▾"))
+                    .disabled(self.picker_pending || targets.is_empty())
+                    .dropdown_menu_with_anchor(Corner::TopRight, move |mut menu, _, _| {
+                        for t in &targets {
+                            let target = t.clone();
+                            let view = view.clone();
+                            let id = t["deviceId"].as_str().unwrap_or("");
+                            menu = menu.item(
+                                PopupMenuItem::new(format!(
+                                    "{} · {}",
+                                    id,
+                                    t["platform"].as_str().unwrap_or("")
+                                ))
+                                .checked(id == current)
+                                .on_click(move |_, _, cx| {
+                                    let _ = view.update(cx, |s, cx| {
+                                        if !s.picker_pending {
+                                            s.picker_error.clear();
+                                            s.overlays.clear();
+                                            s.picker_pending = true;
+                                            s.conn.switch_device(&target);
+                                            cx.notify();
+                                        }
+                                    });
+                                }),
+                            );
+                        }
+                        menu
+                    }),
+            )
+            .child(
+                Button::new("refresh-targets")
+                    .small()
+                    .label("↻")
+                    .tooltip("기기 목록 새로고침")
+                    .disabled(self.picker_pending)
+                    .on_click(cx.listener(|s, _, _, cx| {
+                        s.picker_pending = true;
+                        s.picker_error.clear();
+                        s.conn.refresh_targets(false);
+                        cx.notify();
+                    })),
+            );
         let nav = div()
             .w_full()
             .h(px(48.))
@@ -901,11 +1019,15 @@ impl Render for Viewer {
                                 .child(label)
                                 .on_click(cx.listener(move |s, _, w, cx| {
                                     s.inspection = inspection;
+                                    if inspection {
+                                        s.conn.list_library();
+                                    }
                                     s.focus.focus(w);
                                     cx.notify();
                                 }))
                         },
-                    )),
+                    ))
+                    .child(picker),
             );
         let shell = div()
             .size_full()
@@ -1055,10 +1177,12 @@ impl Render for Viewer {
             );
         let input_focus = self.input.focus_handle(cx);
         let editor_focus = self.editor.focus_handle(cx);
+        let inspection_search_focus = self.inspection_search.focus_handle(cx);
         let search_focus = self.search.focus_handle(cx);
         let keyboard = move |s: &mut Viewer, key: &Keystroke, action: &str, w: &Window| {
             if !input_focus.is_focused(w)
                 && !search_focus.is_focused(w)
+                && !inspection_search_focus.is_focused(w)
                 && !(s.editor_open && editor_focus.is_focused(w))
                 && let Some(code) = hid(key)
             {

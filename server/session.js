@@ -169,6 +169,8 @@ export async function openSession({
         for (const [name, tool] of Object.entries(tools)) {
           const execute = tool.execute;
           tool.execute = async (...args) => {
+            if (device && ["run", "inspect_screen", "take_screenshot"].includes(name))
+              args[0] = { ...args[0], device_id: device };
             const commit = name === "run" ? record(args[0]) : undefined;
             emit?.("line", "→ " + name);
             try {
@@ -182,6 +184,7 @@ export async function openSession({
             }
           };
         }
+        if (device) prompt = `Selected Maestro device: ${JSON.stringify(device)}\n\n${prompt}`;
         if (env.MODEL_PROVIDER === "codex")
           return runCodex(prompt, tools, env, emit);
         const model = selectModel(env);

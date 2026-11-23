@@ -875,7 +875,10 @@ function App() {
   const [commandRows, setCommandRows] = React.useState<CommandEntry[]>([]);
   const [deviceState, setDeviceState] = React.useState<DeviceState>({ status: "idle" });
   const [commandsCollapsed, setCommandsCollapsed] = React.useState(false);
-  const didAutoStartDeviceStream = React.useRef(false);
+  const [targets, setTargets] = React.useState<DeviceTarget[]>([]);
+  const [loadingTargets, setLoadingTargets] = React.useState(true);
+  const [switching, setSwitching] = React.useState(false);
+  const [pickerError, setPickerError] = React.useState("");
 
   useInputFlushLoop();
   const keyboard = useKeyboardInput(deviceState);
@@ -920,39 +923,39 @@ function App() {
     return () => stream.close();
   }, []);
 
-  React.useEffect(() => {
-    if (didAutoStartDeviceStream.current) return;
-    didAutoStartDeviceStream.current = true;
-
-    async function startOnlyConnectedDevice() {
+  async function refreshTargets(autoStart = false) {
+    setLoadingTargets(true);
+    setPickerError("");
+    try {
       const response = await fetch("/api/device/targets");
-      const body = await response.json() as { devices?: DeviceTarget[] };
-      const devices = body.devices || [];
-      if (devices.length !== 1) return;
-
-      const [device] = devices;
-      await startDeviceStream(device);
+      if (!response.ok) throw new Error("기기 목록을 불러오지 못했습니다.");
+      const {devices}: {devices: DeviceTarget[]} = await response.json();
+      setTargets(devices);
+      if (autoStart && devices.length === 1) await startDeviceStream(devices[0]);
+    } catch (error) {
+      setPickerError(String(error));
+    } finally {
+      setLoadingTargets(false);
     }
-
-    startOnlyConnectedDevice().catch((error) => {
-      setDeviceState({
-        status: "error",
-        message: error instanceof Error ? error.message : String(error),
-      });
-    });
-  }, []);
+  }
+  React.useEffect(() => { void refreshTargets(true); }, []);
 
   async function startDeviceStream(target: DeviceTarget) {
-    const response = await fetch("/api/device/start", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        platform: target.platform,
-        deviceType: target.deviceType,
-        deviceId: target.deviceId,
-      }),
-    });
-    setDeviceState(await response.json());
+    setSwitching(true);
+    setPickerError("");
+    setOverlays([]);
+    try {
+      const response = await fetch("/api/device/start", {
+        method: "POST", headers: {"Content-Type":"application/json"}, body: JSON.stringify(target),
+      });
+      const state = await response.json();
+      if (!response.ok) throw new Error(state.error || "기기를 연결하지 못했습니다.");
+      setDeviceState(state);
+    } catch (error) {
+      setPickerError(String(error));
+    } finally {
+      setSwitching(false);
+    }
   }
 
   return (
@@ -963,6 +966,18 @@ function App() {
             <a key={href} href={href} aria-current={active ? "page" : undefined}
               className={`flex items-center border-b-2 px-3 text-sm font-medium ${active ? "border-indigo-600 text-indigo-700 dark:border-indigo-400 dark:text-indigo-300" : "border-transparent hover:bg-neutral-100 dark:hover:bg-neutral-800"}`}>{label}</a>
           )}
+          <div className="ml-auto flex min-w-0 items-center gap-2 text-xs">
+            {pickerError && <span role="alert">{pickerError}</span>}
+            <label htmlFor="device-picker">기기</label>
+            <select id="device-picker" disabled={loadingTargets || switching || !targets.length}
+              value={deviceState.status === "error" ? "" : deviceState.deviceId ?? ""}
+              className="max-w-[36vw] rounded-md border border-neutral-300 bg-white px-2 py-1.5 dark:border-neutral-700 dark:bg-neutral-900"
+              onChange={e=>{const target=targets.find(t=>t.deviceId===e.target.value); if(target) void startDeviceStream(target);}}>
+              <option value="" disabled>{loadingTargets ? "기기 확인 중…" : targets.length ? "기기 선택" : "연결된 기기 없음"}</option>
+              {targets.map(t=><option key={t.deviceId} value={t.deviceId}>{t.deviceId} · {t.platform}</option>)}
+            </select>
+            <button type="button" disabled={loadingTargets || switching} aria-label="기기 목록 새로고침" title="기기 목록 새로고침" className="rounded border border-neutral-300 px-2 py-1 dark:border-neutral-700" onClick={()=>void refreshTargets()}>↻</button>
+          </div>
         </div>
       </nav>
       <div className="min-h-0 flex-1">

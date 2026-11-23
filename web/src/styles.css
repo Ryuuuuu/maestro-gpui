@@ -94,3 +94,8 @@ main:has([aria-label="동선 파일 수정"]) { --editor-width: 18.75rem; }
 @media(prefers-color-scheme:dark){.inspection-card {--insp-border:#404040;--insp-card:#171717;--insp-soft:#262626;--insp-muted:#a3a3a3;--insp-active:#292842;}}
 
 .inspection-actions button:disabled { opacity:.5; cursor:default; }
+
+.inspection-center {display:grid; grid-template-rows:minmax(0, 2fr) minmax(0, 3fr); min-width:0;min-height:0; gap:12px;}
+.inspection-file-query {margin:8px 12px; padding:6px 8px; border:1px solid var(--insp-border); border-radius:6px; background:var(--insp-soft);}
+.inspection-file-list {overflow:auto; padding:0 12px 10px; font-size:12px;}
+.inspection-file-list label {display:flex; align-items:baseline; gap:8px; padding:5px 0; overflow-wrap:anywhere; cursor:pointer;}
