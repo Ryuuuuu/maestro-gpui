@@ -57,6 +57,45 @@ pub fn icon(name: &str, size: f32, color: Hsla) -> Svg {
         .flex_none()
 }
 
+pub fn status_chip(label: &str, p: Palette) -> Div {
+    let (fg, bg) = match label {
+        "진행 중" | "실행 중" => (p.color(0x4338ca, 0xc7c5ff), p.color(0xeef2ff, 0x302e57)),
+        "완료" | "양호" => (p.color(0x116145, 0x9ae6c5), p.color(0xe3f6eb, 0x15392f)),
+        "취약" | "중단" | "실패" => {
+            (p.color(0x9d2437, 0xffb9c1), p.color(0xffe9eb, 0x502731))
+        }
+        "판단 보류" => (p.color(0x854900, 0xffdc9a), p.color(0xfff2d5, 0x483514)),
+        _ => (p.color(0x52525b, 0xd4d4d8), p.color(0xf1f2f4, 0x303039)),
+    };
+    let pill = div()
+        .flex()
+        .flex_none()
+        .items_center()
+        .gap(px(5.))
+        .rounded_full()
+        .px(px(8.))
+        .py(px(3.))
+        .bg(bg)
+        .text_color(fg)
+        .text_size(px(11.))
+        .line_height(px(15.))
+        .font_weight(FontWeight::SEMIBOLD);
+    let pill = if matches!(label, "진행 중" | "실행 중") {
+        pill.child(icon("started", 12., fg).with_animation(
+            "status-spin",
+            Animation::new(std::time::Duration::from_millis(900)).repeat(),
+            |glyph, phase| {
+                glyph.with_transformation(Transformation::rotate(radians(
+                    phase * std::f32::consts::TAU,
+                )))
+            },
+        ))
+    } else {
+        pill.child(div().size(px(6.)).rounded_full().bg(fg))
+    };
+    pill.child(label.to_owned())
+}
+
 pub fn yaml(text: &str, p: Palette) -> StyledText {
     use regex::Regex;
     use std::sync::LazyLock;

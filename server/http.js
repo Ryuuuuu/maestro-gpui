@@ -1,3 +1,4 @@
+import { inspectionService } from "./inspection.js";
 import { importFlow } from "./flows.js";
 import { androidKeyboard } from "./android-keyboard.js";
 import http from "node:http";
@@ -15,6 +16,7 @@ export function createViewerServer(session) {
   let busy = false;
   let saving = false;
   const keyboard = androidKeyboard();
+  const inspection = inspectionService();
   const server = http.createServer(async (req, res) => {
     function reply(status, value) {
       res.writeHead(status, {
@@ -33,6 +35,7 @@ export function createViewerServer(session) {
     )
       return reply(403, { error: "Local access only" });
     try {
+      if (req.url.startsWith("/api/inspection/")) return await inspection.handle(req,res,reply);
       if (req.url === "/" && req.method === "GET") {
         const html = await readFile(
           new URL("../web/build/raw/index.html", import.meta.url),
@@ -220,5 +223,6 @@ export function createViewerServer(session) {
     }
   });
   server.on("close", keyboard.close);
+  server.on("close", inspection.close);
   return server;
 }

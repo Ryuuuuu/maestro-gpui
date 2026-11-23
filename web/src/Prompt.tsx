@@ -1,4 +1,5 @@
 import React from "react";
+import { StatusChip } from "./StatusChip";
 import { FlowEditor } from "./FlowEditor";
 
 type SavedRun = { id: string; label: string; device: string; count: number };
@@ -21,6 +22,7 @@ export function Prompt({ device }: { device?: string }) {
   const picker = React.useRef<HTMLInputElement>(null);
   const [value, setValue] = React.useState("");
   const [busy, setBusy] = React.useState(false);
+  const [execution, setExecution] = React.useState("대기");
   const [log, setLog] = React.useState("");
   const output = React.useRef<HTMLPreElement>(null);
   const follow = React.useRef(true);
@@ -63,6 +65,7 @@ export function Prompt({ device }: { device?: string }) {
   async function submit(file?: File) {
     if (busy || (!file && !value.trim())) return;
     setBusy(true);
+    setExecution("실행 중");
     follow.current = true;
     append(file ? "▶ " + file.name + "\n" : "$ " + value.trim() + "\n");
     try {
@@ -83,6 +86,7 @@ export function Prompt({ device }: { device?: string }) {
         response.headers.get("content-type")?.startsWith("application/json")
       ) {
         append((await response.json()).text + "\n");
+        setExecution("완료");
         if (!file) setValue("");
         return;
       }
@@ -106,8 +110,10 @@ export function Prompt({ device }: { device?: string }) {
         }
       }
       if (!done) throw new Error("Connection closed before completion.");
+      setExecution("완료");
       if (!file) setValue("");
     } catch (error) {
+      setExecution("실패");
       append(
         "× " + (error instanceof Error ? error.message : String(error)) + "\n",
       );
@@ -241,6 +247,10 @@ export function Prompt({ device }: { device?: string }) {
             ) && <p className="px-2 text-neutral-500">검색 결과가 없습니다.</p>}
           </div>
         )}
+        <div className="flow-log-heading">
+          <strong>실행 로그</strong>
+          <StatusChip label={execution} />
+        </div>
         <pre
           ref={output}
           role="log"

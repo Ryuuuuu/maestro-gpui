@@ -816,7 +816,7 @@ export function ViewerLayout({
   onClear,
   deviceState,
   overlays = [],
-  inspection = false,
+  page = "flows",
   keyboard,
 }: {
   rows: CommandEntry[];
@@ -825,7 +825,7 @@ export function ViewerLayout({
   onClear: () => void;
   deviceState: DeviceState;
   overlays?: DeviceOverlay[];
-  inspection?: boolean;
+  page?: "flows" | "inspection" | "history";
   keyboard?: {toggleLanguage:()=>void; error:string};
 }) {
   const device: React.ReactNode = deviceState.status === "streaming" && deviceState.streamUrl ? (
@@ -845,11 +845,11 @@ export function ViewerLayout({
     <main data-collapsed={collapsed} className="flex h-screen overflow-x-auto overflow-y-hidden bg-neutral-100 text-neutral-700 dark:bg-neutral-950 dark:text-neutral-200">
       <section className="flex min-h-0 min-w-fit flex-1 items-center justify-center">
         <div className="flex h-[calc(var(--viewer-height)-2rem)] w-full max-w-[1392px] items-stretch">
-          <div className={inspection ? "hidden" : "contents"}>
+          <div className={page !== "flows" ? "hidden" : "contents"}>
             <Prompt device={deviceState.deviceId} />
             <CommandsPanel rows={rows} collapsed={collapsed} onToggle={onToggle} onClear={onClear} />
           </div>
-          <Inspection visible={inspection} />
+          <Inspection device={deviceState.deviceId} visible={page === "inspection"} historyVisible={page === "history"} />
           {keyboard?.error && <span role="alert">{keyboard.error}</span>}
           <DevicePanel
             toggleLanguage={keyboard?.toggleLanguage}
@@ -870,7 +870,8 @@ function subscribePage(notify: () => void) {
 }
 
 function App() {
-  const inspection = React.useSyncExternalStore(subscribePage, () => location.hash === "#/inspection");
+  const hash = React.useSyncExternalStore(subscribePage, () => location.hash);
+  const page = hash === "#/history" ? "history" : hash === "#/inspection" ? "inspection" : "flows";
   const [overlays, setOverlays] = React.useState<DeviceOverlay[]>([]);
   const [commandRows, setCommandRows] = React.useState<CommandEntry[]>([]);
   const [deviceState, setDeviceState] = React.useState<DeviceState>({ status: "idle" });
@@ -962,7 +963,7 @@ function App() {
     <div className="viewer-app flex h-dvh flex-col bg-neutral-100 text-neutral-700 dark:bg-neutral-950 dark:text-neutral-200">
       <nav aria-label="주 메뉴" className="h-12 shrink-0 border-b border-neutral-200 bg-white dark:border-neutral-800 dark:bg-neutral-900">
         <div className="mx-auto flex h-full max-w-[1392px] gap-2 px-4">
-          {([["#/flows","동선 생성",!inspection],["#/inspection","금취 점검",inspection]] as const).map(([href,label,active]) =>
+          {([["#/flows","동선 생성",page === "flows"],["#/inspection","금취 점검",page === "inspection"],["#/history","점검 이력",page === "history"]] as const).map(([href,label,active]) =>
             <a key={href} href={href} aria-current={active ? "page" : undefined}
               className={`flex items-center border-b-2 px-3 text-sm font-medium ${active ? "border-indigo-600 text-indigo-700 dark:border-indigo-400 dark:text-indigo-300" : "border-transparent hover:bg-neutral-100 dark:hover:bg-neutral-800"}`}>{label}</a>
           )}
@@ -982,7 +983,7 @@ function App() {
       </nav>
       <div className="min-h-0 flex-1">
       <ViewerLayout
-      inspection={inspection}
+      page={page}
       rows={commandRows}
       collapsed={commandsCollapsed}
       onToggle={() => setCommandsCollapsed((c) => !c)}

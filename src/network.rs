@@ -13,6 +13,8 @@ use std::{
 pub enum Update {
     Event(Value),
     State(Value),
+    Inspection(Value),
+    InspectionReply(Result<(), String>),
     Targets(bool, Result<Vec<Value>, String>),
     Switched(Result<Value, String>),
     Output(String),
@@ -66,6 +68,11 @@ impl Connection {
         subscribe(
             format!("{url}/api/device/state"),
             Update::State,
+            sender.clone(),
+        );
+        subscribe(
+            format!("{url}/api/inspection/stream"),
+            Update::Inspection,
             sender.clone(),
         );
         let (input, queue) = mpsc::channel::<String>();
@@ -132,6 +139,30 @@ impl Connection {
         });
     }
 
+    pub fn inspection_request(&self, reset: bool, body: Value) {
+        let url = format!(
+            "{}/api/inspection/{}",
+            self.url,
+            if reset { "reset" } else { "start" }
+        );
+        let tx = self.sender.clone();
+        thread::spawn(move || {
+            let call = || -> Result<(), String> {
+                let mut r = ureq::post(url)
+                    .config()
+                    .http_status_as_error(false)
+                    .build()
+                    .send_json(body)
+                    .map_err(|e| e.to_string())?;
+                if !r.status().is_success() {
+                    let v: Value = r.body_mut().read_json().map_err(|e| e.to_string())?;
+                    return Err(v["error"].as_str().unwrap_or("점검 요청 실패").into());
+                }
+                Ok(())
+            };
+            let _ = tx.send(Update::InspectionReply(call()));
+        });
+    }
     pub fn list_flows(&self) {
         let url = format!("{}/api/flows", self.url);
         let tx = self.sender.clone();

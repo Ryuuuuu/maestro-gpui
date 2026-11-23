@@ -99,3 +99,29 @@ main:has([aria-label="동선 파일 수정"]) { --editor-width: 18.75rem; }
 .inspection-file-query {margin:8px 12px; padding:6px 8px; border:1px solid var(--insp-border); border-radius:6px; background:var(--insp-soft);}
 .inspection-file-list {overflow:auto; padding:0 12px 10px; font-size:12px;}
 .inspection-file-list label {display:flex; align-items:baseline; gap:8px; padding:5px 0; overflow-wrap:anywhere; cursor:pointer;}
+
+.status-chip {display:inline-flex;align-items:center;gap:5px;border-radius:99px;padding:3px 8px;font-size:11px;font-weight:600;line-height:1.4;white-space:nowrap;color:#52525b;background:#f1f2f4;}
+.status-chip i {width:6px;height:6px;border-radius:50%;background:currentColor;flex:none;}
+.status-chip[data-tone=active] {color:#4338ca;background:#eef2ff;}
+.status-chip[data-tone=active] i {width:11px;height:11px;background:none;border:1.7px solid currentColor;border-right-color:transparent;animation:spin .9s linear infinite;}
+.status-chip[data-tone=good] {color:#116145;background:#e3f6eb;}
+.status-chip[data-tone=warn] {color:#854900;background:#fff2d5;}
+.status-chip[data-tone=bad] {color:#9d2437;background:#ffe9eb;}
+.flow-log-heading,.history-title,.history-result {display:flex;align-items:center;justify-content:space-between;gap:10px;}
+.flow-log-heading {padding:3px 4px 0;font-size:12px;}
+.history-entry {border:1px solid var(--insp-border);border-radius:10px;overflow:hidden;margin-bottom:12px;}
+.history-title {padding:10px 12px;background:var(--insp-soft);}
+.history-result {padding:7px 12px;border-top:1px solid var(--insp-border);}
+.inspection-card progress::-webkit-progress-value {transition:width .25s ease;}
+.inspection-content:has(table) {flex:1;min-height:0;}
+.inspection-content thead th {position:sticky;top:0;z-index:1;}
+.inspection-actions {border-top:1px solid var(--insp-border);flex:none;}
+.inspection-actions [role=status] {margin:0;}
+@media(prefers-color-scheme:dark){
+  .status-chip {background:#303039;color:#d4d4d8;}
+  .status-chip[data-tone=active] {background:#302e57;color:#c7c5ff;}
+  .status-chip[data-tone=good] {background:#15392f;color:#9ae6c5;}
+  .status-chip[data-tone=warn] {background:#483514;color:#ffdc9a;}
+  .status-chip[data-tone=bad] {background:#502731;color:#ffb9c1;}
+}
+@media(prefers-reduced-motion:reduce){.status-chip[data-tone=active] i,.animate-spin{animation:none;}.inspection-card progress::-webkit-progress-value{transition:none;}}

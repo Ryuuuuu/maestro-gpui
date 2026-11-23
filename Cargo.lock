@@ -3370,6 +3370,7 @@ dependencies = [
  "image",
  "regex",
  "rust-embed",
+ "serde",
  "serde_json",
  "tempfile",
  "ureq",

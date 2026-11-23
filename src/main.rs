@@ -21,8 +21,15 @@ use std::{
 };
 use style::{Assets, Palette, hid, icon, yaml};
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum Page {
+    Flows,
+    Inspection,
+    History,
+}
+
 struct Viewer {
-    inspection: bool,
+    page: Page,
     targets: Vec<Value>,
     picker_pending: bool,
     picker_error: String,
@@ -42,6 +49,7 @@ struct Viewer {
     pending_move: Option<String>,
     input: Entity<InputState>,
     busy: bool,
+    last_execution: &'static str,
     replaying: bool,
     flow_choices: Vec<Value>,
     search: Entity<InputState>,
@@ -123,7 +131,7 @@ impl Viewer {
         let conn = Connection::new(url);
         conn.refresh_targets(true);
         Self {
-            inspection: false,
+            page: Page::Flows,
             checklist: inspection::Checklist::new(),
             conn,
             targets: Vec::new(),
@@ -143,6 +151,7 @@ impl Viewer {
             pending_move: None,
             input,
             busy: false,
+            last_execution: "대기",
             replaying: false,
             flow_choices: Vec::new(),
             search,
@@ -201,6 +210,17 @@ impl Viewer {
                         self.stream = next;
                     }
                     self.device = device;
+                }
+                Update::Inspection(v) => {
+                    if let Ok(snapshot) = serde_json::from_value(v) {
+                        self.checklist.apply(snapshot, &mut self.inspection_files);
+                    }
+                }
+                Update::InspectionReply(result) => {
+                    self.checklist.pending = false;
+                    if let Err(e) = result {
+                        self.checklist.error = e;
+                    }
                 }
                 Update::Event(event) => {
                     if let Some(commands) = event["commands"]
@@ -265,6 +285,7 @@ impl Viewer {
                 Update::Output(text) => self.append_output(&text),
                 Update::Reply(result) => {
                     self.busy = false;
+                    self.last_execution = if result.is_ok() { "완료" } else { "실패" };
                     if result.is_ok() && !self.replaying {
                         self.input
                             .update(cx, |field, cx| field.set_value("", window, cx));
@@ -705,7 +726,12 @@ impl Viewer {
             .h(px(height))
             .rounded(px(32.))
             .overflow_hidden();
-        let mut pane = div().flex().items_start().gap_4().p_4();
+        let mut pane = div()
+            .when(self.page == Page::Inspection, |d| d.flex_none())
+            .flex()
+            .items_start()
+            .gap_4()
+            .p_4();
         if !live {
             return pane.child(
                 frame
@@ -993,9 +1019,15 @@ impl Render for Viewer {
                     .max_w(px(1392.))
                     .gap_2()
                     .px_4()
-                    .children([(false, "동선 생성"), (true, "금취 점검")].into_iter().map(
-                        |(inspection, label)| {
-                            let active = self.inspection == inspection;
+                    .children(
+                        [
+                            (Page::Flows, "동선 생성"),
+                            (Page::Inspection, "금취 점검"),
+                            (Page::History, "점검 이력"),
+                        ]
+                        .into_iter()
+                        .map(|(page, label)| {
+                            let active = self.page == page;
                             div()
                                 .id(label)
                                 .h_full()
@@ -1018,15 +1050,15 @@ impl Render for Viewer {
                                 })
                                 .child(label)
                                 .on_click(cx.listener(move |s, _, w, cx| {
-                                    s.inspection = inspection;
-                                    if inspection {
+                                    s.page = page;
+                                    if page == Page::Inspection {
                                         s.conn.list_library();
                                     }
                                     s.focus.focus(w);
                                     cx.notify();
                                 }))
-                        },
-                    ))
+                        }),
+                    )
                     .child(picker),
             );
         let shell = div()
@@ -1044,13 +1076,17 @@ impl Render for Viewer {
         let width = (f32::from(window.viewport_size().width) * 0.24).clamp(216., 320.);
         let commands_width = if self.collapsed { 40. } else { 320. };
         let rail = if self.stream.is_some() { 64. } else { 0. };
-        let phone_width = (f32::from(window.viewport_size().width).min(1392.)
-            - width
-            - if self.editor_open { 280. } else { 0. }
-            - commands_width
-            - 64.
-            - rail)
-            .max(140.);
+        let phone_width = if self.page == Page::Inspection {
+            (f32::from(window.viewport_size().width).min(1392.) * 0.27 - rail).max(100.)
+        } else {
+            (f32::from(window.viewport_size().width).min(1392.)
+                - width
+                - if self.editor_open { 280. } else { 0. }
+                - commands_width
+                - 64.
+                - rail)
+                .max(140.)
+        };
         let sidebar = div()
             .flex_none()
             .w(px(width))
@@ -1159,6 +1195,22 @@ impl Render for Viewer {
             })
             .child(
                 div()
+                    .flex()
+                    .items_center()
+                    .justify_between()
+                    .px_1()
+                    .child(div().font_weight(FontWeight::SEMIBOLD).child("실행 로그"))
+                    .child(style::status_chip(
+                        if self.busy {
+                            "실행 중"
+                        } else {
+                            self.last_execution
+                        },
+                        p,
+                    )),
+            )
+            .child(
+                div()
                     .id("terminal")
                     .track_scroll(&self.terminal_scroll)
                     .flex_1()
@@ -1241,10 +1293,13 @@ impl Render for Viewer {
                             .max_w(px(1392.))
                             .h(px(height + 32.))
                             .w_full()
-                            .when(self.inspection, |row| {
+                            .when(self.page == Page::History, |row| {
+                                row.child(self.inspection_history(p))
+                            })
+                            .when(self.page == Page::Inspection, |row| {
                                 row.child(self.inspection_panels(p, cx))
                             })
-                            .when(!self.inspection, |row| {
+                            .when(self.page == Page::Flows, |row| {
                                 row.child(sidebar)
                                     .when(self.editor_open, |d| d.child(self.editor_panel(p, cx)))
                                     .child(self.commands(p, cx))
@@ -1279,7 +1334,15 @@ fn main() {
             }
         })
         .detach();
-        let bounds = Bounds::centered(None, size(px(1280.), px(760.)), cx);
+        let preferred = size(px(1400.), px(840.));
+        let window_size = cx.primary_display().map_or(preferred, |display| {
+            let screen = display.bounds().size;
+            size(
+                preferred.width.min(screen.width * 0.96),
+                preferred.height.min(screen.height * 0.92),
+            )
+        });
+        let bounds = Bounds::centered(None, window_size, cx);
         cx.open_window(
             WindowOptions {
                 window_bounds: Some(WindowBounds::Windowed(bounds)),

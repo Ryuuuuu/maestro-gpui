@@ -1,20 +1,43 @@
 import React from "react";
+import { StatusChip } from "./StatusChip";
 import checks from "../../assets/inspection.json";
 
-const outcomes = ["양호", "취약", "판단 보류"] as const;
-type Entry = { time: string; text: string };
-type Run = { started: number; results: string[]; log: Entry[] };
-
-function elapsed(started: number) {
-  const seconds = Math.floor((performance.now() - started) / 1000);
-  return [Math.floor(seconds / 60), seconds % 60]
-    .map((n) => String(n).padStart(2, "0"))
-    .join(":");
-}
-
-export function Inspection({ visible }: { visible: boolean }) {
+type Run = {
+  selected: number[];
+  files: string[];
+  current: number | null;
+  results: string[];
+  log: { time: string; text: string }[];
+  status: "running" | "completed" | "failed";
+};
+type History = { finished: string; rows: string[]; status: string };
+export function Inspection({
+  visible,
+  historyVisible,
+  device,
+}: {
+  visible: boolean;
+  historyVisible: boolean;
+  device?: string;
+}) {
+  const [history, setHistory] = React.useState<History[]>([]);
   const [run, setRun] = React.useState<Run | null>(null);
-  const [selected, setSelected] = React.useState(() => checks.map((_, i) => i));
+  const [pending, setPending] = React.useState(false);
+  const [connected, setConnected] = React.useState(false);
+  const [requestError, setRequestError] = React.useState("");
+  const [draft, setSelected] = React.useState(() => checks.map((_, i) => i));
+  const selected = run?.selected ?? draft;
+  React.useEffect(() => {
+    const events = new EventSource("/api/inspection/stream");
+    events.onmessage = (e) => {
+      const snapshot = JSON.parse(e.data);
+      setRun(snapshot.run);
+      setHistory(snapshot.history);
+      setConnected(true);
+    };
+    events.onerror = () => setConnected(false);
+    return () => events.close();
+  }, []);
   const [files, setFiles] = React.useState<string[]>([]);
   const [chosen, setChosen] = React.useState<string[]>([]);
   const [query, setQuery] = React.useState("");
@@ -48,47 +71,74 @@ export function Inspection({ visible }: { visible: boolean }) {
       .toLowerCase()
       .includes(query.trim().normalize().toLowerCase()),
   );
+  if (historyVisible)
+    return (
+      <section
+        aria-label="점검 이력"
+        className="inspection-card my-2 ml-4 flex-1"
+      >
+        <header>
+          <h2>점검 이력</h2>
+          <span>{history.length}건</span>
+        </header>
+        <div className="inspection-content p-3">
+          {history.length ? (
+            history.map((entry, i) => (
+              <article key={history.length - i} className="history-entry">
+                <div className="history-title">
+                  <strong>{entry.finished} · 모의 점검</strong>
+                  <StatusChip
+                    label={entry.status === "failed" ? "중단" : "완료"}
+                  />
+                </div>
+                {entry.rows.map((row) => {
+                  const split = row.lastIndexOf(" · ");
+                  return split < 0 ? (
+                    <p key={row}>{row}</p>
+                  ) : (
+                    <div key={row} className="history-result">
+                      <span>{row.slice(0, split)}</span>
+                      <StatusChip label={row.slice(split + 3)} />
+                    </div>
+                  );
+                })}
+              </article>
+            ))
+          ) : (
+            <p>아직 완료한 점검이 없습니다.</p>
+          )}
+        </div>
+      </section>
+    );
   if (!visible) return null;
   const completed = run?.results.length ?? 0;
-  const current = run ? (selected[completed] ?? -1) : -1;
-  function start() {
-    if (!selected.length) return;
-    setRun({
-      started: performance.now(),
-      results: [],
-      log: [
-        { time: "00:00", text: checks[selected[0]].name + " 점검 시작" },
-        ...chosen.map((name) => ({
-          time: "00:00",
-          text: "선택 동선 · " + name,
-        })),
-      ],
-    });
-  }
-  function record(result: string) {
-    if (!run || current < 0) return;
-    const time = elapsed(run.started);
-    const next = checks[selected[completed + 1]];
-    setRun({
-      ...run,
-      results: [...run.results, result],
-      log: [
-        { time, text: next ? next.name + " 점검 시작" : "선택 항목 점검 완료" },
-        { time, text: checks[current].name + " · " + result },
-        ...run.log,
-      ],
-    });
+  const current = run?.current ?? -1;
+  async function request() {
+    setPending(true);
+    setRequestError("");
+    try {
+      const res = await fetch("/api/inspection/" + (run ? "reset" : "start"), {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(run ? {} : { selected, files: chosen, device }),
+      });
+      if (!res.ok) throw new Error((await res.json()).error);
+    } catch (e) {
+      setRequestError(String(e));
+    } finally {
+      setPending(false);
+    }
   }
   return (
     <section aria-label="금취 점검" className="inspection-layout">
       <section className="inspection-card">
         <header>
           <h2>점검 실행 로그</h2>
-          <span>{run?.log.length ?? 0}건</span>
+          <span>모의 엔진 · {run?.log.length ?? 0}건</span>
         </header>
         <div className="inspection-log" role="log">
           {run ? (
-            run.log.map((e, i) => (
+            [...run.log].reverse().map((e, i) => (
               <div key={run.log.length - i}>
                 <time>+{e.time}</time>
                 <span>{e.text}</span>
@@ -103,7 +153,7 @@ export function Inspection({ visible }: { visible: boolean }) {
         <section className="inspection-card" aria-label="점검 동선 파일">
           <header>
             <h2>동선 파일 선택</h2>
-            <span>{chosen.length}개 선택</span>
+            <span>{(run?.files ?? chosen).length}개 선택</span>
           </header>
           <input
             type="search"
@@ -124,7 +174,7 @@ export function Inspection({ visible }: { visible: boolean }) {
                   <input
                     type="checkbox"
                     disabled={!!run}
-                    checked={chosen.includes(name)}
+                    checked={(run?.files ?? chosen).includes(name)}
                     onChange={(e) => {
                       const checked = e.currentTarget.checked;
                       setChosen((prev) =>
@@ -178,43 +228,57 @@ export function Inspection({ visible }: { visible: boolean }) {
                           }
                         />
                         <strong>{item.name}</strong>
+                        <span className="shrink-0 text-xs font-normal text-neutral-500 dark:text-neutral-400">
+                          {item.score}점
+                        </span>
                       </label>
                       <small>{item.description}</small>
                     </td>
                     <td>
-                      {!selected.includes(i)
-                        ? "제외"
-                        : selected.indexOf(i) < completed
-                          ? "완료"
-                          : i === current
-                            ? "진행 중"
-                            : "대기"}
+                      <StatusChip
+                        label={
+                          !selected.includes(i)
+                            ? "제외"
+                            : selected.indexOf(i) < completed
+                              ? "완료"
+                              : i === current
+                                ? "진행 중"
+                                : run?.status === "failed"
+                                  ? "중단"
+                                  : "대기"
+                        }
+                      />
                     </td>
-                    <td>{run?.results[selected.indexOf(i)] ?? "—"}</td>
+                    <td>
+                      {run?.results[selected.indexOf(i)] ? (
+                        <StatusChip label={run.results[selected.indexOf(i)]} />
+                      ) : (
+                        "—"
+                      )}
+                    </td>
                   </tr>
                 ))}
               </tbody>
             </table>
-            <div className="inspection-actions">
-              {current < 0 ? (
-                <button
-                  className={run ? "primary" : "primary inspection-start"}
-                  disabled={!selected.length}
-                  onClick={() => (run ? setRun(null) : start())}
-                >
-                  {run ? "새 점검 준비" : "선택 항목 점검 시작"}
-                </button>
-              ) : (
-                <>
-                  <p>{checks[current].name} 결과 기록</p>
-                  {outcomes.map((value) => (
-                    <button key={value} onClick={() => record(value)}>
-                      {value}
-                    </button>
-                  ))}
-                </>
-              )}
-            </div>
+          </div>
+          <div className="inspection-actions">
+            {!connected && <p role="status">점검 서버 연결 중…</p>}
+            {requestError && <p role="alert">{requestError}</p>}
+            {run?.status === "running" ? (
+              <p role="status">
+                {current < 0
+                  ? "모의 엔진 응답 대기"
+                  : checks[current].name + " · 모의 분석 중"}
+              </p>
+            ) : (
+              <button
+                className="primary inspection-start"
+                disabled={!connected || pending || !selected.length}
+                onClick={request}
+              >
+                {run ? "새 점검 준비" : "선택 항목 점검 시작"}
+              </button>
+            )}
           </div>
         </section>
       </div>
