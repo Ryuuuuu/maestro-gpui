@@ -37,6 +37,19 @@ Python 3.12와 Android Platform Tools(`adb`)를 준비하고 프로젝트 루트
 
 HTTPS 연결은 기본적으로 원래의 TLS 연결을 유지하며 새 CONNECT 요청을 기록합니다. 테스트 앱에서 HTTPS 요청·응답까지 확인할 때는 `.env`의 `MAESTRO_PROXY_HTTPS_HOSTS`에 정확한 테스트 호스트 이름을 쉼표로 구분해 넣고 프록시를 다시 켜세요. 테스트 클라이언트가 이 프로젝트에서 생성한 공개 인증서 `.tools/proxy-config/mitmproxy-ca-cert.pem`을 신뢰해야 합니다. 시스템 프록시를 사용하지 않는 앱의 직접 연결이나 UDP 트래픽은 수집 대상에서 제외됩니다.
 
+### Android 실기기 검증 결과
+
+2026-11-24에 Windows PC와 USB로 연결한 Galaxy A34에서 검사했습니다.
+
+| 확인 항목 | 관찰 결과 |
+| --- | --- |
+| 시스템 프록시 | Viewer에서 프록시를 켜자 Android의 `http_proxy`가 기기 루프백 주소로 설정됐습니다. ADB reverse가 해당 포트를 PC의 mitmproxy 리스너에 연결했고, 프록시를 끈 뒤 원래 설정으로 복귀했습니다. |
+| 기본 브라우저 → PC | Maestro의 `openLink`로 삼성 인터넷에서 일회성 HTTP 테스트 페이지를 열었습니다. PC 서버가 삼성 인터넷의 GET 요청을 받았고, Viewer에 동일한 고유 경로와 HTTP 200, 응답 156바이트가 기록됐습니다. 통신 상세의 본문에서도 테스트 식별자가 일치했습니다. |
+| 첫 동선의 화면 판정 | 네트워크 요청 후 `extendedWaitUntil`에서 페이지 문구를 찾지 못해 해당 동선은 **실패**로 끝났습니다. 완료된 요청·응답은 실패한 실행에서도 조회됐습니다. |
+| 파일 형식 | 통합 테스트에서 동선 실행 전후의 요청이 제외되는지 확인하고, 저장 API가 만든 `.mitm`을 공식 `FlowReader`로 다시 열어 요청 경로와 응답 본문을 대조했습니다. |
+
+이 검증은 HTTP로 수행했으며 휴대폰에 CA 인증서를 설치하지 않았습니다. 기능 커밋의 macOS·Windows·Linux 빌드와 테스트가 모두 통과했습니다. [검증한 GitHub Actions 실행](https://github.com/Ryuuuuu/maestro-gpui/actions/runs/45289694374)
+
 ## 모델 설정
 
 | 모델 서비스 | MODEL_PROVIDER | 자격 증명 또는 주소 |
